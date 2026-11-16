@@ -57,9 +57,12 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(ticker(handle));
+
+            let handle_twitch = app.handle().clone();
+            tauri::async_runtime::spawn(twitch::auth::token_keeper(handle_twitch));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![greet,set_feature, get_feature, twitch::auth::twitch_login_start, twitch::auth::twitch_status, twitch::auth::twitch_logout])
+        .invoke_handler(tauri::generate_handler![greet,set_feature, get_feature, twitch::auth::twitch_login_start, twitch::auth::twitch_status, twitch::auth::twitch_logout, twitch::auth::twitch_restore])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

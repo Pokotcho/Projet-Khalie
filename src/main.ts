@@ -77,7 +77,13 @@ window.addEventListener("DOMContentLoaded", async () => {
     if (state === "in" && info) status.textContent = `Connecté en tant que ${info.login}`;
   };
 
-  const current = await invoke<LoginInfo | null>("twitch_status");
+    // Pendant la vérification de la session sauvegardée, on masque les boutons.
+  status.textContent = "Vérification de la connexion…";
+  loginBtn.style.display = "none";
+  logoutBtn.style.display = "none";
+  codeBox.style.display = "none";
+
+  const current = await invoke<LoginInfo | null>("twitch_restore");
   if (current) setUi("in", current);
   else setUi("out");
 
@@ -107,5 +113,9 @@ window.addEventListener("DOMContentLoaded", async () => {
   await listen<string>("twitch-login-error", (event) => {
     setUi("out");
     status.textContent = `Erreur : ${event.payload}`;
+  });
+  await listen("twitch-session-lost", () => {
+    setUi("out");
+    status.textContent = "Session expirée : reconnecte-toi.";
   });
 });
