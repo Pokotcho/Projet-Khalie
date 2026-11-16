@@ -1,10 +1,16 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+mod twitch;
+use std::sync::Mutex;
+use twitch::auth::TwitchSession;
+
 // L'état partagé : une seule valeur pour l'instant, l'interrupteur.
-struct AppState {
-    feature_enabled: AtomicBool,
+pub struct AppState {
+    pub feature_enabled: AtomicBool,
+    pub twitch: Mutex<Option<TwitchSession>>,
+    pub login_attempt: AtomicU64,
 }
 
 #[tauri::command]
@@ -45,13 +51,15 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             feature_enabled: AtomicBool::new(true),
+            twitch: Mutex::new(None),
+            login_attempt: AtomicU64::new(0),
         })
         .setup(|app| {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(ticker(handle));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![greet, set_feature, get_feature])
+        .invoke_handler(tauri::generate_handler![greet,set_feature, get_feature, twitch::auth::twitch_login_start, twitch::auth::twitch_status, twitch::auth::twitch_logout])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

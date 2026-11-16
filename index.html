@@ -38,6 +38,7 @@
         <button type="submit">Greet</button>
       </form>
       <p id="greet-msg"></p>
+
       <hr />
       <h2>Test de l'interrupteur</h2>
       <label>
@@ -45,6 +46,18 @@
         Fonction activée
       </label>
       <p>Compteur reçu de Rust : <strong id="tick-value">-</strong></p>
+
+      <hr />
+      <h2>Connexion Twitch</h2>
+      <button id="twitch-login-btn">Se connecter avec Twitch</button>
+      <button id="twitch-logout-btn">Se déconnecter</button>
+      <p id="twitch-status">Non connecté</p>
+      <p id="twitch-code" style="display: none">
+        Si le navigateur ne s'ouvre pas :
+        <a href="#" id="twitch-link">ouvrir la page d'autorisation</a><br />
+        Code : <strong id="twitch-usercode"></strong>
+      </p>
+      
     </main>
   </body>
 </html>
