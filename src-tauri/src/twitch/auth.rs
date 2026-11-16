@@ -7,7 +7,7 @@ use crate::AppState;
 use super::storage;
 
 // Identifiant public de ton application Twitch.
-const CLIENT_ID: &str = "1uwt92895h196h07j7asl0fme7smlo";
+pub const CLIENT_ID: &str = "1uwt92895h196h07j7asl0fme7smlo";
 const SCOPES: &str = "user:read:chat user:write:chat";
 
 const REVOKE_URL: &str = "https://id.twitch.tv/oauth2/revoke";
@@ -288,6 +288,7 @@ async fn complete_login(
 
     let state = app.state::<AppState>();
     *state.twitch.lock().unwrap() = Some(session);
+    super::chat::start(app);
 
     Ok(LoginInfo {
         login: who.login,
@@ -346,6 +347,7 @@ pub async fn twitch_logout(app: AppHandle) -> Result<(), String> {
     };
 
     storage::clear();
+    super::chat::stop(&app);
 
     if let Some(s) = session {
         let client = reqwest::Client::new();
@@ -413,6 +415,7 @@ pub async fn restore_session(app: &AppHandle) -> Option<LoginInfo> {
     };
     let state = app.state::<AppState>();
     *state.twitch.lock().unwrap() = Some(session);
+    super::chat::start(app);
     Some(info)
 }
 

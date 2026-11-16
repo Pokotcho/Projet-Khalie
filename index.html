@@ -9,6 +9,47 @@
   </head>
 
   <body>
+
+    <hr />
+    <h2>Bot : chaîne et messages</h2>
+    <p>
+      <label>
+        Chaîne à surveiller (vide = la chaîne du compte connecté) :
+        <input id="channel-input" placeholder="pseudo du streamer" />
+      </label>
+      <button id="channel-save-btn">Enregistrer</button>
+    </p>
+    <p id="channel-status"></p>
+    <p>
+      <input id="send-input" placeholder="Message à envoyer avec le bot" maxlength="500" />
+      <button id="send-btn">Envoyer</button>
+    </p>
+    <p id="send-status"></p>
+
+    <hr />
+    <h2>Chat Twitch</h2>
+    <p id="chat-status">Chat : arrêté</p>
+    <div
+      id="chat-log"
+      style="height: 220px; overflow-y: auto; text-align: left; border: 1px solid #888; padding: 6px; font-size: 14px;"
+    ></div>
+
+    <hr />
+    <h2>Bot : chaîne et messages</h2>
+    <p>
+      <label>
+        Chaîne à surveiller (vide = la chaîne du compte connecté) :
+        <input id="channel-input" placeholder="pseudo du streamer" />
+      </label>
+      <button id="channel-save-btn">Enregistrer</button>
+    </p>
+    <p id="channel-status"></p>
+    <p>
+      <input id="send-input" placeholder="Message à envoyer avec le bot" maxlength="500" />
+      <button id="send-btn">Envoyer</button>
+    </p>
+    <p id="send-status"></p>
+
     <main class="container">
       <h1>Welcome to Tauri</h1>
 

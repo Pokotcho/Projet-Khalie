@@ -119,3 +119,81 @@ window.addEventListener("DOMContentLoaded", async () => {
     status.textContent = "Session expirée : reconnecte-toi.";
   });
 });
+
+interface ChatMessage {
+  message_id: string;
+  user_id: string;
+  login: string;
+  display_name: string;
+  text: string;
+  is_self: boolean;
+}
+
+window.addEventListener("DOMContentLoaded", async () => {
+  // --- Affichage du chat ---
+  const chatStatus = document.querySelector<HTMLElement>("#chat-status")!;
+  const chatLog = document.querySelector<HTMLElement>("#chat-log")!;
+
+  await listen<string>("chat-status", (event) => {
+    chatStatus.textContent = `Chat : ${event.payload}`;
+  });
+
+  await listen<ChatMessage>("chat-message", (event) => {
+    const m = event.payload;
+
+    const line = document.createElement("div");
+    if (m.is_self) line.style.opacity = "0.6"; // messages du bot en plus discret
+
+    const name = document.createElement("strong");
+    name.textContent = m.display_name || m.login;
+    const text = document.createElement("span");
+    text.textContent = `: ${m.text}`; // textContent : jamais de HTML venant d'un viewer
+    line.append(name, text);
+    chatLog.appendChild(line);
+
+    while (chatLog.children.length > 200) {
+      chatLog.removeChild(chatLog.firstChild!);
+    }
+    chatLog.scrollTop = chatLog.scrollHeight;
+  });
+
+  // --- Chaîne surveillée et envoi de messages ---
+  const channelInput = document.querySelector<HTMLInputElement>("#channel-input")!;
+  const channelSave = document.querySelector<HTMLButtonElement>("#channel-save-btn")!;
+  const channelStatus = document.querySelector<HTMLElement>("#channel-status")!;
+  const sendInput = document.querySelector<HTMLInputElement>("#send-input")!;
+  const sendBtn = document.querySelector<HTMLButtonElement>("#send-btn")!;
+  const sendStatus = document.querySelector<HTMLElement>("#send-status")!;
+
+  channelInput.value = await invoke<string>("get_channel");
+
+  channelSave.addEventListener("click", async () => {
+    try {
+      const saved = await invoke<string>("set_channel", { login: channelInput.value });
+      channelInput.value = saved;
+      channelStatus.textContent = saved
+        ? `Chaîne enregistrée : ${saved}`
+        : "Chaîne du compte connecté";
+    } catch (e) {
+      channelStatus.textContent = `Erreur : ${e}`;
+    }
+  });
+
+  const send = async () => {
+    const text = sendInput.value.trim();
+    if (!text) return;
+    sendStatus.textContent = "Envoi…";
+    try {
+      await invoke("send_chat_message", { text });
+      sendInput.value = "";
+      sendStatus.textContent = "Message envoyé";
+    } catch (e) {
+      sendStatus.textContent = `Échec : ${e}`;
+    }
+  };
+
+  sendBtn.addEventListener("click", send);
+  sendInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") send();
+  });
+});
