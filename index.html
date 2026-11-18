@@ -1,104 +1,88 @@
 <!doctype html>
-<html lang="en">
+<html lang="fr">
   <head>
     <meta charset="UTF-8" />
-    <link rel="stylesheet" href="/src/styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri App</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <title>Contrôle du stream</title>
     <script type="module" src="/src/main.ts" defer></script>
   </head>
 
   <body>
-
-    <hr />
-    <h2>Bot : chaîne et messages</h2>
-    <p>
-      <label>
-        Chaîne à surveiller (vide = la chaîne du compte connecté) :
-        <input id="channel-input" placeholder="pseudo du streamer" />
-      </label>
-      <button id="channel-save-btn">Enregistrer</button>
-    </p>
-    <p id="channel-status"></p>
-    <p>
-      <input id="send-input" placeholder="Message à envoyer avec le bot" maxlength="500" />
-      <button id="send-btn">Envoyer</button>
-    </p>
-    <p id="send-status"></p>
-
-    <hr />
-    <h2>Chat Twitch</h2>
-    <p id="chat-status">Chat : arrêté</p>
-    <div
-      id="chat-log"
-      style="height: 220px; overflow-y: auto; text-align: left; border: 1px solid #888; padding: 6px; font-size: 14px;"
-    ></div>
-
-    <hr />
-    <h2>Bot : chaîne et messages</h2>
-    <p>
-      <label>
-        Chaîne à surveiller (vide = la chaîne du compte connecté) :
-        <input id="channel-input" placeholder="pseudo du streamer" />
-      </label>
-      <button id="channel-save-btn">Enregistrer</button>
-    </p>
-    <p id="channel-status"></p>
-    <p>
-      <input id="send-input" placeholder="Message à envoyer avec le bot" maxlength="500" />
-      <button id="send-btn">Envoyer</button>
-    </p>
-    <p id="send-status"></p>
-
     <main class="container">
-      <h1>Welcome to Tauri</h1>
+      <h1>Contrôle du stream</h1>
 
-      <div class="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/src/assets/vite.svg" class="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img
-            src="/src/assets/tauri.svg"
-            class="logo tauri"
-            alt="Tauri logo"
-          />
-        </a>
-        <a href="https://www.typescriptlang.org/docs" target="_blank">
-          <img
-            src="/src/assets/typescript.svg"
-            class="logo typescript"
-            alt="typescript logo"
-          />
-        </a>
+      <p id="loading" class="hint">Vérification des connexions…</p>
+
+      <div id="app" hidden>
+        <!-- Comptes connectés (apparaît dès qu'un compte est connecté) -->
+        <section class="card" id="summary" hidden>
+          <h2>Comptes connectés</h2>
+          <ul id="summary-list" class="accounts"></ul>
+        </section>
+
+        <!-- Étape 1 : le streamer -->
+        <section class="card" id="card-streamer" data-role="streamer" hidden>
+          <h2>1. Connecter le compte du streamer</h2>
+          <p class="hint">
+            Ce compte lit le chat et servira aux actions réservées au propriétaire de la chaîne.
+          </p>
+          <button class="btn-login">Connecter le streamer</button>
+
+          <div class="pending" hidden>
+            <p>
+              En attente de l'autorisation…
+              <button class="btn-cancel secondary">Annuler</button>
+            </p>
+            <p class="pending-help">
+              Ton navigateur s'est ouvert : connecte-toi avec le <strong>compte du streamer</strong>
+              et clique sur « Autoriser ».
+            </p>
+            <p>Si rien ne s'ouvre : <code class="auth-url"></code></p>
+            <p>Code, si Twitch le demande : <strong class="user-code"></strong></p>
+          </div>
+          <p class="error" hidden></p>
+        </section>
+
+        <!-- Étape 2 : le bot -->
+        <section class="card" id="card-bot" data-role="bot" hidden>
+          <h2>2. Connecter le compte du bot</h2>
+          <p class="hint">Ce compte écrit dans le chat et sera piloté depuis l'application.</p>
+          <button class="btn-login">Connecter le bot</button>
+
+          <div class="pending" hidden>
+            <p>
+              En attente de l'autorisation…
+              <button class="btn-cancel secondary">Annuler</button>
+            </p>
+            <p class="pending-help">
+              Copie ce lien dans une <strong>fenêtre de navigation privée</strong>, connecte-toi
+              avec le <strong>compte du bot</strong> (pas celui du streamer), puis clique sur
+              « Autoriser ».
+            </p>
+            <p><code class="auth-url"></code></p>
+            <p>Code, si Twitch le demande : <strong class="user-code"></strong></p>
+          </div>
+          <p class="error" hidden></p>
+        </section>
+
+        <!-- Chat : apparaît quand les deux comptes sont connectés -->
+        <section class="card" id="chat-section" hidden>
+          <h2>Chat Twitch</h2>
+          <p id="chat-status" class="hint">Chat : arrêté</p>
+          <div id="chat-log" class="chat-log"></div>
+
+          <div class="send-row">
+            <select id="send-as" title="Compte utilisé pour écrire">
+              <option value="bot">Écrire en tant que BOT</option>
+              <option value="streamer">Écrire en tant que STREAMER</option>
+            </select>
+            <input id="send-input" placeholder="Message à envoyer" maxlength="500" />
+            <button id="send-btn">Envoyer</button>
+          </div>
+          <p id="send-status" class="hint"></p>
+        </section>
       </div>
-      <p>Click on the Tauri logo to learn more about the framework</p>
-
-      <form class="row" id="greet-form">
-        <input id="greet-input" placeholder="Enter a name..." />
-        <button type="submit">Greet</button>
-      </form>
-      <p id="greet-msg"></p>
-
-      <hr />
-      <h2>Test de l'interrupteur</h2>
-      <label>
-        <input type="checkbox" id="feature-toggle" />
-        Fonction activée
-      </label>
-      <p>Compteur reçu de Rust : <strong id="tick-value">-</strong></p>
-
-      <hr />
-      <h2>Connexion Twitch</h2>
-      <button id="twitch-login-btn">Se connecter avec Twitch</button>
-      <button id="twitch-logout-btn">Se déconnecter</button>
-      <p id="twitch-status">Non connecté</p>
-      <p id="twitch-code" style="display: none">
-        Si le navigateur ne s'ouvre pas :
-        <a href="#" id="twitch-link">ouvrir la page d'autorisation</a><br />
-        Code : <strong id="twitch-usercode"></strong>
-      </p>
-      
     </main>
   </body>
 </html>

@@ -7,11 +7,11 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio_tungstenite::tungstenite::Message;
 
 use super::auth::{TwitchSession, CLIENT_ID};
+use super::Role;
 use crate::AppState;
 
 const EVENTSUB_URL: &str = "wss://eventsub.wss.twitch.tv/ws";
 const SUBSCRIBE_URL: &str = "https://api.twitch.tv/helix/eventsub/subscriptions";
-const USERS_URL: &str = "https://api.twitch.tv/helix/users";
 const SEND_URL: &str = "https://api.twitch.tv/helix/chat/messages";
 
 // Un message de chat, tel qu'envoyé à l'interface.
@@ -22,10 +22,11 @@ pub struct ChatMessage {
     pub login: String,
     pub display_name: String,
     pub text: String,
-    pub is_self: bool, // true si le message vient du bot lui-même
+    pub from_bot: bool,      // message écrit par le compte du bot
+    pub from_streamer: bool, // message écrit par le compte du streamer
 }
 
-// Démarre (ou redémarre) la lecture du chat avec la session en mémoire.
+// Démarre (ou redémarre) la lecture du chat avec le compte du streamer.
 pub fn start(app: &AppHandle) {
     let state = app.state::<AppState>();
     let mut slot = state.chat_task.lock().unwrap();
@@ -42,7 +43,6 @@ pub fn stop(app: &AppHandle) {
     if let Some(handle) = state.chat_task.lock().unwrap().take() {
         handle.abort();
     }
-    *state.channel.lock().unwrap() = None;
     let _ = app.emit("chat-status", "Chat arrêté");
 }
 
@@ -54,11 +54,11 @@ async fn chat_loop(app: AppHandle) {
     loop {
         let session = {
             let state = app.state::<AppState>();
-            let copy = state.twitch.lock().unwrap().clone();
-            copy
+            let s = state.session(Role::Streamer);
+            s
         };
         let Some(session) = session else {
-            let _ = app.emit("chat-status", "Chat arrêté (non connecté)");
+            let _ = app.emit("chat-status", "Chat arrêté (streamer non connecté)");
             return;
         };
 
@@ -81,63 +81,17 @@ async fn chat_loop(app: AppHandle) {
     }
 }
 
-// Retrouve l'identifiant Twitch d'une chaîne à partir de son pseudo.
-async fn resolve_channel(
-    client: &reqwest::Client,
-    session: &TwitchSession,
-    login: &str,
-) -> Result<String, String> {
-    let url = format!("{USERS_URL}?login={login}");
-    let resp = client
-        .get(url)
-        .header("Authorization", format!("Bearer {}", session.access_token))
-        .header("Client-Id", CLIENT_ID)
-        .send()
-        .await
-        .map_err(|e| format!("Twitch injoignable : {e}"))?;
-
-    if !resp.status().is_success() {
-        return Err(format!("code {}", resp.status()));
-    }
-    let v: Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("réponse illisible : {e}"))?;
-
-    v["data"][0]["id"]
-        .as_str()
-        .map(|s| s.to_string())
-        .ok_or_else(|| format!("aucune chaîne nommée « {login} »"))
-}
-
 // Une connexion WebSocket, du début à la fin. Retourne la raison de l'arrêt.
+// La chaîne surveillée est celle du streamer, et c'est son compte qui lit.
 async fn run_connection(
     app: &AppHandle,
     client: &reqwest::Client,
     session: &TwitchSession,
     connected: &mut bool,
 ) -> String {
-    // 1. Quelle chaîne surveiller ? (vide = la chaîne du compte connecté)
-    let channel_login = crate::settings::load(app).channel_login;
-    let broadcaster_id = if channel_login.is_empty() {
-        session.user_id.clone()
-    } else {
-        match resolve_channel(client, session, &channel_login).await {
-            Ok(id) => id,
-            Err(e) => return format!("chaîne introuvable : {e}"),
-        }
-    };
-    {
-        let state = app.state::<AppState>();
-        *state.channel.lock().unwrap() = Some(broadcaster_id.clone());
-    }
-    let target = if channel_login.is_empty() {
-        "chaîne du compte connecté".to_string()
-    } else {
-        channel_login.clone()
-    };
+    let broadcaster_id = session.user_id.clone();
+    let target = session.login.clone();
 
-    // 2. Connexion au WebSocket EventSub.
     let (mut ws, _) = match tokio_tungstenite::connect_async(EVENTSUB_URL).await {
         Ok(pair) => pair,
         Err(e) => return format!("connexion impossible : {e}"),
@@ -189,6 +143,13 @@ async fn run_connection(
                         {
                             let ev = &v["payload"]["event"];
                             let sender_id = ev["chatter_user_id"].as_str().unwrap_or("");
+
+                            let bot_id = {
+                                let state = app.state::<AppState>();
+                                let id = state.user_id_of(Role::Bot);
+                                id
+                            };
+
                             let chat = ChatMessage {
                                 message_id: ev["message_id"].as_str().unwrap_or("").into(),
                                 user_id: sender_id.into(),
@@ -198,7 +159,8 @@ async fn run_connection(
                                     .unwrap_or("")
                                     .into(),
                                 text: ev["message"]["text"].as_str().unwrap_or("").into(),
-                                is_self: sender_id == session.user_id,
+                                from_bot: bot_id.as_deref() == Some(sender_id),
+                                from_streamer: sender_id == session.user_id,
                             };
                             let _ = app.emit("chat-message", chat);
                         }
@@ -214,7 +176,7 @@ async fn run_connection(
     }
 }
 
-// Demande à Twitch de nous envoyer les messages du chat de la chaîne cible.
+// Demande à Twitch de nous envoyer les messages du chat de la chaîne du streamer.
 async fn subscribe_chat(
     client: &reqwest::Client,
     session: &TwitchSession,
@@ -254,22 +216,22 @@ async fn subscribe_chat(
 
 // --- Envoi de messages ---
 
-// Envoie un message dans le chat de la chaîne cible, avec le compte du bot.
+// Envoie un message dans le chat du streamer, avec le compte indiqué.
 pub async fn send_message(
     client: &reqwest::Client,
-    session: &TwitchSession,
+    sender: &TwitchSession,
     broadcaster_id: &str,
     text: &str,
 ) -> Result<(), String> {
     let body = serde_json::json!({
         "broadcaster_id": broadcaster_id,
-        "sender_id": session.user_id,
+        "sender_id": sender.user_id,
         "message": text
     });
 
     let resp = client
         .post(SEND_URL)
-        .header("Authorization", format!("Bearer {}", session.access_token))
+        .header("Authorization", format!("Bearer {}", sender.access_token))
         .header("Client-Id", CLIENT_ID)
         .json(&body)
         .send()
@@ -297,9 +259,9 @@ pub async fn send_message(
     }
 }
 
-// Commande appelée par l'interface.
+// Commande appelée par l'interface : "role" désigne le compte qui écrit.
 #[tauri::command]
-pub async fn send_chat_message(app: AppHandle, text: String) -> Result<(), String> {
+pub async fn send_chat_message(app: AppHandle, text: String, role: Role) -> Result<(), String> {
     let text = text.trim().to_string();
     if text.is_empty() {
         return Err("Message vide.".into());
@@ -308,16 +270,15 @@ pub async fn send_chat_message(app: AppHandle, text: String) -> Result<(), Strin
         return Err("Message trop long (500 caractères maximum).".into());
     }
 
-    let (session, broadcaster_id) = {
+    let (sender, streamer) = {
         let state = app.state::<AppState>();
-        let s = state.twitch.lock().unwrap().clone();
-        let c = state.channel.lock().unwrap().clone();
-        (s, c)
+        let a = state.session(role);
+        let b = state.session(Role::Streamer);
+        (a, b)
     };
 
-    let session = session.ok_or("Compte du bot non connecté.")?;
-    let broadcaster_id =
-        broadcaster_id.ok_or("Le chat n'est pas encore connecté, patiente un instant.")?;
+    let sender = sender.ok_or(format!("Le compte {} n'est pas connecté.", role.key()))?;
+    let streamer = streamer.ok_or("Le compte du streamer n'est pas connecté.")?;
 
-    send_message(&reqwest::Client::new(), &session, &broadcaster_id, &text).await
+    send_message(&reqwest::Client::new(), &sender, &streamer.user_id, &text).await
 }

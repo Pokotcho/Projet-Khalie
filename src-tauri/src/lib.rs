@@ -1,50 +1,98 @@
-mod settings;
 mod twitch;
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::Mutex;
-use std::time::Duration;
 
 use tauri::async_runtime::JoinHandle;
-use tauri::{AppHandle, Emitter, Manager, State};
 
 use twitch::auth::TwitchSession;
+use twitch::Role;
+
+// Les sessions des deux comptes.
+#[derive(Default)]
+pub struct Accounts {
+    streamer: Option<TwitchSession>,
+    bot: Option<TwitchSession>,
+}
+
+impl Accounts {
+    fn get(&self, role: Role) -> Option<&TwitchSession> {
+        match role {
+            Role::Streamer => self.streamer.as_ref(),
+            Role::Bot => self.bot.as_ref(),
+        }
+    }
+
+    fn set(&mut self, role: Role, session: Option<TwitchSession>) {
+        match role {
+            Role::Streamer => self.streamer = session,
+            Role::Bot => self.bot = session,
+        }
+    }
+
+    fn take(&mut self, role: Role) -> Option<TwitchSession> {
+        match role {
+            Role::Streamer => self.streamer.take(),
+            Role::Bot => self.bot.take(),
+        }
+    }
+}
 
 // L'état partagé de l'application.
 pub struct AppState {
-    pub feature_enabled: AtomicBool,
-    pub twitch: Mutex<Option<TwitchSession>>,
-    pub login_attempt: AtomicU64,
+    pub accounts: Mutex<Accounts>,
+    pub streamer_attempt: AtomicU64,
+    pub bot_attempt: AtomicU64,
     pub chat_task: Mutex<Option<JoinHandle<()>>>,
-    pub channel: Mutex<Option<String>>, // identifiant de la chaîne surveillée
 }
 
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
+impl AppState {
+    pub fn new() -> Self {
+        Self {
+            accounts: Mutex::new(Accounts::default()),
+            streamer_attempt: AtomicU64::new(0),
+            bot_attempt: AtomicU64::new(0),
+            chat_task: Mutex::new(None),
+        }
+    }
 
-#[tauri::command]
-fn set_feature(enabled: bool, state: State<'_, AppState>) {
-    state.feature_enabled.store(enabled, Ordering::Relaxed);
-    println!("Interrupteur mis sur : {}", enabled);
-}
+    // Compteur de tentatives de connexion de ce rôle (sert à annuler une attente).
+    pub fn attempt(&self, role: Role) -> &AtomicU64 {
+        match role {
+            Role::Streamer => &self.streamer_attempt,
+            Role::Bot => &self.bot_attempt,
+        }
+    }
 
-#[tauri::command]
-fn get_feature(state: State<'_, AppState>) -> bool {
-    state.feature_enabled.load(Ordering::Relaxed)
-}
+    // Copie de la session d'un rôle (None si non connecté).
+    pub fn session(&self, role: Role) -> Option<TwitchSession> {
+        self.accounts.lock().unwrap().get(role).cloned()
+    }
 
-// Tâche de l'exercice de la phase 0 (compteur).
-async fn ticker(app: AppHandle) {
-    let mut counter: u64 = 0;
-    loop {
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        counter += 1;
+    pub fn user_id_of(&self, role: Role) -> Option<String> {
+        self.accounts
+            .lock()
+            .unwrap()
+            .get(role)
+            .map(|s| s.user_id.clone())
+    }
 
-        let state = app.state::<AppState>();
-        if state.feature_enabled.load(Ordering::Relaxed) {
-            let _ = app.emit("tick", counter);
+    pub fn set_session(&self, role: Role, session: Option<TwitchSession>) {
+        self.accounts.lock().unwrap().set(role, session);
+    }
+
+    pub fn take_session(&self, role: Role) -> Option<TwitchSession> {
+        self.accounts.lock().unwrap().take(role)
+    }
+
+    // Remplace la session seulement si le compte est toujours connecté.
+    pub fn replace_session_if_present(&self, role: Role, session: TwitchSession) -> bool {
+        let mut accounts = self.accounts.lock().unwrap();
+        if accounts.get(role).is_some() {
+            accounts.set(role, Some(session));
+            true
+        } else {
+            false
         }
     }
 }
@@ -53,31 +101,16 @@ async fn ticker(app: AppHandle) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(AppState {
-            feature_enabled: AtomicBool::new(true),
-            twitch: Mutex::new(None),
-            login_attempt: AtomicU64::new(0),
-            chat_task: Mutex::new(None),
-            channel: Mutex::new(None),
-        })
+        .manage(AppState::new())
         .setup(|app| {
             let handle = app.handle().clone();
-            tauri::async_runtime::spawn(ticker(handle));
-
-            let handle_twitch = app.handle().clone();
-            tauri::async_runtime::spawn(twitch::auth::token_keeper(handle_twitch));
+            tauri::async_runtime::spawn(twitch::auth::token_keeper(handle));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            greet,
-            set_feature,
-            get_feature,
             twitch::auth::twitch_login_start,
-            twitch::auth::twitch_status,
             twitch::auth::twitch_logout,
             twitch::auth::twitch_restore,
-            settings::get_channel,
-            settings::set_channel,
             twitch::chat::send_chat_message
         ])
         .run(tauri::generate_context!())

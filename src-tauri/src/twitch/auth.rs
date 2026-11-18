@@ -1,22 +1,30 @@
-use serde::{Deserialize, Serialize};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Manager};
 use std::sync::atomic::Ordering;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager};
+
+use super::{storage, Role};
 use crate::AppState;
-use super::storage;
 
-// Identifiant public de ton application Twitch.
+// Identifiant public de ton application Twitch (pas un secret).
 pub const CLIENT_ID: &str = "1uwt92895h196h07j7asl0fme7smlo";
-const SCOPES: &str = "user:read:chat user:write:chat";
-
-const REVOKE_URL: &str = "https://id.twitch.tv/oauth2/revoke";
-const CANCELLED: &str = "annulée";
 
 const DEVICE_URL: &str = "https://id.twitch.tv/oauth2/device";
 const TOKEN_URL: &str = "https://id.twitch.tv/oauth2/token";
 const VALIDATE_URL: &str = "https://id.twitch.tv/oauth2/validate";
+const REVOKE_URL: &str = "https://id.twitch.tv/oauth2/revoke";
 const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
+const CANCELLED: &str = "annulée";
+
+// Permissions demandées à chaque compte. Si tu en ajoutes plus tard pour un rôle,
+// ce compte devra se reconnecter pour les accorder.
+fn scopes_for(role: Role) -> &'static str {
+    match role {
+        Role::Streamer => "user:read:chat user:write:chat",
+        Role::Bot => "user:read:chat user:write:chat",
+    }
+}
 
 // Réponse de Twitch à la demande de code (renvoyée aussi à l'interface).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,7 +54,8 @@ struct ValidateResponse {
     user_id: String,
 }
 
-// Session gardée en mémoire (jamais envoyée à l'interface : elle contient les tokens).
+// Session d'un compte, gardée en mémoire et dans le trousseau Windows.
+// Elle contient des tokens : elle n'est jamais envoyée à l'interface.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TwitchSession {
     pub access_token: String,
@@ -56,6 +65,20 @@ pub struct TwitchSession {
     pub user_id: String,
 }
 
+// Ce qu'on a le droit d'envoyer à l'interface.
+#[derive(Debug, Clone, Serialize)]
+pub struct LoginInfo {
+    pub role: Role,
+    pub login: String,
+    pub user_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RoleError {
+    role: Role,
+    message: String,
+}
+
 pub fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -63,17 +86,19 @@ pub fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-// Ce qu'on a le droit d'envoyer à l'interface.
-#[derive(Debug, Clone, Serialize)]
-pub struct LoginInfo {
-    pub login: String,
-    pub user_id: String,
+fn is_cancelled(app: &AppHandle, role: Role, attempt_id: u64) -> bool {
+    app.state::<AppState>().attempt(role).load(Ordering::SeqCst) != attempt_id
 }
 
-async fn request_device_code(client: &reqwest::Client) -> Result<DeviceCodeResponse, String> {
+// --- Appels à Twitch ---
+
+async fn request_device_code(
+    client: &reqwest::Client,
+    role: Role,
+) -> Result<DeviceCodeResponse, String> {
     let resp = client
         .post(DEVICE_URL)
-        .form(&[("client_id", CLIENT_ID), ("scopes", SCOPES)])
+        .form(&[("client_id", CLIENT_ID), ("scopes", scopes_for(role))])
         .send()
         .await
         .map_err(|e| format!("Impossible de joindre Twitch : {e}"))?;
@@ -90,24 +115,40 @@ async fn request_device_code(client: &reqwest::Client) -> Result<DeviceCodeRespo
         .map_err(|e| format!("Réponse de Twitch illisible : {e}"))
 }
 
+async fn revoke_token(client: &reqwest::Client, token: &str) -> Result<(), String> {
+    let resp = client
+        .post(REVOKE_URL)
+        .form(&[("client_id", CLIENT_ID), ("token", token)])
+        .send()
+        .await
+        .map_err(|e| format!("Impossible de joindre Twitch : {e}"))?;
+
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("Révocation refusée (code {})", resp.status()))
+    }
+}
+
 async fn poll_for_token(
     client: &reqwest::Client,
     dc: &DeviceCodeResponse,
     app: &AppHandle,
+    role: Role,
     attempt_id: u64,
 ) -> Result<TokenResponse, String> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(dc.expires_in);
     let mut interval = dc.interval.max(1);
 
     loop {
-        if is_cancelled(app, attempt_id) {
+        if is_cancelled(app, role, attempt_id) {
             return Err(CANCELLED.into());
         }
         if tokio::time::Instant::now() >= deadline {
             return Err("Le code a expiré, recommence la connexion.".into());
         }
         tokio::time::sleep(Duration::from_secs(interval)).await;
-        if is_cancelled(app, attempt_id) {
+        if is_cancelled(app, role, attempt_id) {
             return Err(CANCELLED.into());
         }
 
@@ -115,7 +156,7 @@ async fn poll_for_token(
             .post(TOKEN_URL)
             .form(&[
                 ("client_id", CLIENT_ID),
-                ("scopes", SCOPES),
+                ("scopes", scopes_for(role)),
                 ("device_code", dc.device_code.as_str()),
                 ("grant_type", DEVICE_GRANT),
             ])
@@ -144,25 +185,6 @@ async fn poll_for_token(
                 ))
             }
         }
-    }
-}
-
-fn is_cancelled(app: &AppHandle, attempt_id: u64) -> bool {
-    app.state::<AppState>().login_attempt.load(Ordering::SeqCst) != attempt_id
-}
-
-async fn revoke_token(client: &reqwest::Client, token: &str) -> Result<(), String> {
-    let resp = client
-        .post(REVOKE_URL)
-        .form(&[("client_id", CLIENT_ID), ("token", token)])
-        .send()
-        .await
-        .map_err(|e| format!("Impossible de joindre Twitch : {e}"))?;
-
-    if resp.status().is_success() {
-        Ok(())
-    } else {
-        Err(format!("Révocation refusée (code {})", resp.status()))
     }
 }
 
@@ -259,19 +281,40 @@ async fn refresh_session(
     }
 }
 
+// --- Connexion ---
+
 async fn complete_login(
     client: &reqwest::Client,
     dc: &DeviceCodeResponse,
     app: &AppHandle,
+    role: Role,
     attempt_id: u64,
 ) -> Result<LoginInfo, String> {
-    let token = poll_for_token(client, dc, app, attempt_id).await?;
+    let token = poll_for_token(client, dc, app, role, attempt_id).await?;
     let who = validate_token(client, &token.access_token).await?;
 
     // Si l'utilisateur a annulé entre-temps, on invalide le token qu'on vient d'obtenir.
-    if is_cancelled(app, attempt_id) {
+    if is_cancelled(app, role, attempt_id) {
         let _ = revoke_token(client, &token.access_token).await;
         return Err(CANCELLED.into());
+    }
+
+    // Un même compte Twitch ne peut pas servir pour les deux rôles.
+    // (On ne révoque pas ce token : il expirera tout seul, et on évite de toucher
+    // à l'autre session de ce compte.)
+    let other_role = role.other();
+    let other_user_id = {
+        let state = app.state::<AppState>();
+        let id = state.user_id_of(other_role);
+        id
+    };
+    if other_user_id.as_deref() == Some(who.user_id.as_str()) {
+        return Err(format!(
+            "Le compte « {} » est déjà connecté comme {}. Connecte un compte différent \
+             (utilise une fenêtre de navigation privée).",
+            who.login,
+            other_role.key()
+        ));
     }
 
     let session = TwitchSession {
@@ -282,15 +325,22 @@ async fn complete_login(
         user_id: who.user_id.clone(),
     };
 
-    if let Err(e) = storage::save(&session) {
+    if let Err(e) = storage::save(role, &session) {
         println!("Sauvegarde de la session impossible : {e}");
     }
 
-    let state = app.state::<AppState>();
-    *state.twitch.lock().unwrap() = Some(session);
-    super::chat::start(app);
+    {
+        let state = app.state::<AppState>();
+        state.set_session(role, Some(session));
+    }
+
+    // Le chat se lit avec le compte du streamer : on le démarre dès qu'il est connecté.
+    if role == Role::Streamer {
+        super::chat::start(app);
+    }
 
     Ok(LoginInfo {
+        role,
         login: who.login,
         user_id: who.user_id,
     })
@@ -299,28 +349,28 @@ async fn complete_login(
 // --- Commandes appelées par l'interface ---
 
 #[tauri::command]
-pub async fn twitch_login_start(app: AppHandle) -> Result<DeviceCodeResponse, String> {
-    // Nouveau numéro de tentative, et refus si on est déjà connecté.
+pub async fn twitch_login_start(app: AppHandle, role: Role) -> Result<DeviceCodeResponse, String> {
+    // Nouveau numéro de tentative, et refus si ce rôle est déjà connecté.
     let attempt_id = {
         let state = app.state::<AppState>();
-        if state.twitch.lock().unwrap().is_some() {
-            return Err("Déjà connecté : déconnecte-toi d'abord.".into());
+        if state.session(role).is_some() {
+            return Err("Ce compte est déjà connecté : déconnecte-le d'abord.".into());
         }
-        state.login_attempt.fetch_add(1, Ordering::SeqCst) + 1
+        state.attempt(role).fetch_add(1, Ordering::SeqCst) + 1
     };
 
     let client = reqwest::Client::new();
-    let dc = request_device_code(&client).await?;
+    let dc = request_device_code(&client, role).await?;
 
     let dc_for_task = dc.clone();
     tauri::async_runtime::spawn(async move {
-        match complete_login(&client, &dc_for_task, &app, attempt_id).await {
+        match complete_login(&client, &dc_for_task, &app, role, attempt_id).await {
             Ok(info) => {
                 let _ = app.emit("twitch-login-success", info);
             }
             Err(e) if e == CANCELLED => {}
             Err(e) => {
-                let _ = app.emit("twitch-login-error", e);
+                let _ = app.emit("twitch-login-error", RoleError { role, message: e });
             }
         }
     });
@@ -329,77 +379,67 @@ pub async fn twitch_login_start(app: AppHandle) -> Result<DeviceCodeResponse, St
 }
 
 #[tauri::command]
-pub fn twitch_status(state: tauri::State<'_, AppState>) -> Option<LoginInfo> {
-    state.twitch.lock().unwrap().as_ref().map(|s| LoginInfo {
-        login: s.login.clone(),
-        user_id: s.user_id.clone(),
-    })
-}
-
-#[tauri::command]
-pub async fn twitch_logout(app: AppHandle) -> Result<(), String> {
-    // On annule toute connexion en attente et on retire la session de la mémoire.
+pub async fn twitch_logout(app: AppHandle, role: Role) -> Result<(), String> {
+    // On annule toute connexion en attente de ce rôle et on retire sa session.
     let session = {
         let state = app.state::<AppState>();
-        state.login_attempt.fetch_add(1, Ordering::SeqCst);
-        let taken = state.twitch.lock().unwrap().take();
-        taken
+        state.attempt(role).fetch_add(1, Ordering::SeqCst);
+        state.take_session(role)
     };
 
-    storage::clear();
-    super::chat::stop(&app);
+    storage::clear(role);
+
+    if role == Role::Streamer {
+        super::chat::stop(&app);
+    }
 
     if let Some(s) = session {
         let client = reqwest::Client::new();
 
         match revoke_token(&client, &s.access_token).await {
-            Ok(()) => println!("Token révoqué chez Twitch."),
+            Ok(()) => println!("Token {} révoqué chez Twitch.", role.key()),
             Err(e) => println!("Révocation impossible : {e}"),
-        }
-
-        // Vérification : Twitch doit maintenant refuser ce token.
-        match validate_token(&client, &s.access_token).await {
-            Ok(_) => println!("ATTENTION : le token est encore valide après la révocation !"),
-            Err(_) => println!("Vérifié : Twitch ne reconnaît plus ce token."),
         }
     }
     Ok(())
 }
 
-// Relit la session sauvegardée et la remet en service si possible.
-pub async fn restore_session(app: &AppHandle) -> Option<LoginInfo> {
+// Relit la session sauvegardée d'un rôle et la remet en service si possible.
+async fn restore_role(app: &AppHandle, role: Role) -> Option<LoginInfo> {
     // Déjà en mémoire (ex. rechargement de la page) ?
-    {
+    let current = {
         let state = app.state::<AppState>();
-        let current = state.twitch.lock().unwrap().as_ref().map(|s| LoginInfo {
+        let info = state.session(role).map(|s| LoginInfo {
+            role,
             login: s.login.clone(),
             user_id: s.user_id.clone(),
         });
-        if current.is_some() {
-            return current;
-        }
+        info
+    };
+    if current.is_some() {
+        return current;
     }
 
-    let mut session = storage::load()?;
+    let mut session = storage::load(role)?;
     let client = reqwest::Client::new();
 
     match check_token(&client, &session.access_token).await {
         TokenState::Valid => {}
         TokenState::Unreachable(e) => {
-            println!("Twitch injoignable, session conservée mais non activée : {e}");
+            println!("Twitch injoignable, session {} non activée : {e}", role.key());
             return None;
         }
         TokenState::Invalid => match refresh_session(&client, &session).await {
             Ok(new_session) => {
-                if let Err(e) = storage::save(&new_session) {
+                if let Err(e) = storage::save(role, &new_session) {
                     println!("Sauvegarde de la session impossible : {e}");
                 }
-                println!("Token rafraîchi au démarrage.");
+                println!("Token {} rafraîchi au démarrage.", role.key());
                 session = new_session;
             }
             Err(RefreshError::Rejected(e)) => {
-                println!("Session expirée, reconnexion nécessaire : {e}");
-                storage::clear();
+                println!("Session {} expirée, reconnexion nécessaire : {e}", role.key());
+                storage::clear(role);
                 return None;
             }
             Err(RefreshError::Network(e)) => {
@@ -410,72 +450,93 @@ pub async fn restore_session(app: &AppHandle) -> Option<LoginInfo> {
     }
 
     let info = LoginInfo {
+        role,
         login: session.login.clone(),
         user_id: session.user_id.clone(),
     };
-    let state = app.state::<AppState>();
-    *state.twitch.lock().unwrap() = Some(session);
-    super::chat::start(app);
+    {
+        let state = app.state::<AppState>();
+        state.set_session(role, Some(session));
+    }
+
+    if role == Role::Streamer {
+        super::chat::start(app);
+    }
     Some(info)
 }
 
+// Restaure les deux comptes au démarrage et renvoie ceux qui sont connectés.
 #[tauri::command]
-pub async fn twitch_restore(app: AppHandle) -> Option<LoginInfo> {
-    restore_session(&app).await
+pub async fn twitch_restore(app: AppHandle) -> Vec<LoginInfo> {
+    let mut accounts = Vec::new();
+    for role in [Role::Streamer, Role::Bot] {
+        if let Some(info) = restore_role(&app, role).await {
+            accounts.push(info);
+        }
+    }
+    accounts
 }
 
-// Tâche de fond : rafraîchit le token avant son expiration.
+// --- Maintien des sessions ---
+
+// Tâche de fond : rafraîchit les tokens avant leur expiration.
 pub async fn token_keeper(app: AppHandle) {
     let client = reqwest::Client::new();
     loop {
         tokio::time::sleep(Duration::from_secs(60)).await;
-
-        let current = {
-            let state = app.state::<AppState>();
-            let copy = state.twitch.lock().unwrap().clone();
-            copy
-        };
-        let Some(session) = current else { continue };
-
-        // Marge de 10 minutes avant l'expiration.
-        if session.expires_at > now_unix() + 600 {
-            continue;
+        for role in [Role::Streamer, Role::Bot] {
+            keep_one(&app, &client, role).await;
         }
+    }
+}
 
-        match refresh_session(&client, &session).await {
-            Ok(new_session) => {
-                // On ne remet la session en place que si l'utilisateur est toujours connecté.
-                let applied = {
-                    let state = app.state::<AppState>();
-                    let mut guard = state.twitch.lock().unwrap();
-                    if guard.is_some() {
-                        *guard = Some(new_session.clone());
-                        true
-                    } else {
-                        false
-                    }
-                };
-                if applied {
-                    if let Err(e) = storage::save(&new_session) {
-                        println!("Sauvegarde de la session impossible : {e}");
-                    }
-                    println!("Token rafraîchi automatiquement.");
-                } else {
-                    let _ = revoke_token(&client, &new_session.access_token).await;
+async fn keep_one(app: &AppHandle, client: &reqwest::Client, role: Role) {
+    let current = {
+        let state = app.state::<AppState>();
+        let s = state.session(role);
+        s
+    };
+    let Some(session) = current else { return };
+
+    // Marge de 10 minutes avant l'expiration.
+    if session.expires_at > now_unix() + 600 {
+        return;
+    }
+
+    match refresh_session(client, &session).await {
+        Ok(new_session) => {
+            // On ne remet la session en place que si le compte est toujours connecté.
+            let applied = {
+                let state = app.state::<AppState>();
+                let ok = state.replace_session_if_present(role, new_session.clone());
+                ok
+            };
+            if applied {
+                if let Err(e) = storage::save(role, &new_session) {
+                    println!("Sauvegarde de la session impossible : {e}");
                 }
+                println!("Token {} rafraîchi automatiquement.", role.key());
+            } else {
+                let _ = revoke_token(client, &new_session.access_token).await;
             }
-            Err(RefreshError::Rejected(e)) => {
-                println!("Session rejetée par Twitch, reconnexion nécessaire : {e}");
-                storage::clear();
-                {
-                    let state = app.state::<AppState>();
-                    *state.twitch.lock().unwrap() = None;
-                }
-                let _ = app.emit("twitch-session-lost", ());
+        }
+        Err(RefreshError::Rejected(e)) => {
+            println!(
+                "Session {} rejetée par Twitch, reconnexion nécessaire : {e}",
+                role.key()
+            );
+            storage::clear(role);
+            {
+                let state = app.state::<AppState>();
+                state.set_session(role, None);
             }
-            Err(RefreshError::Network(e)) => {
-                println!("Rafraîchissement reporté (réseau) : {e}");
+            if role == Role::Streamer {
+                super::chat::stop(app);
             }
+            let _ = app.emit("twitch-session-lost", role);
+        }
+        Err(RefreshError::Network(e)) => {
+            println!("Rafraîchissement {} reporté (réseau) : {e}", role.key());
         }
     }
 }
