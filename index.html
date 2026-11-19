@@ -99,9 +99,15 @@
             </label>
             <p class="hint">
               Champs utilisables dans les réponses : <code>[@pseudo]</code> mentionne le viewer qui
-              a tapé la commande, <code>[pseudo]</code> écrit son nom sans @, et
-              <code>[commandes]</code> (pour !commandes) insère la liste des commandes accessibles à
-              tous.
+              a tapé la commande, <code>[pseudo]</code> écrit son nom sans @,
+              <code>[compteur]</code> insère la valeur du compteur, et <code>[commandes]</code>
+              (pour !commandes) insère la liste des commandes accessibles à tous.
+            </p>
+            <p class="counter-row">
+              Compteur : <strong id="counter-value">0</strong>
+              <button id="counter-minus" class="btn-small">−1</button>
+              <button id="counter-plus" class="btn-small">+1</button>
+              <button id="counter-reset" class="btn-small">Remettre à zéro</button>
             </p>
             <p id="commands-status" class="hint"></p>
           </div>

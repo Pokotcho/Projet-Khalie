@@ -122,7 +122,9 @@ pub fn run() {
             bot::bot_set_enabled,
             bot::bot_update_command,
             bot::bot_create_command,
-            bot::bot_delete_command
+            bot::bot_delete_command,
+            bot::bot_counter_adjust,
+            bot::bot_counter_reset
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

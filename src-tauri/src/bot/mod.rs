@@ -21,12 +21,22 @@ pub enum Level {
     Streamer,
 }
 
-// Comportement de la commande (d'autres s'ajouteront : compteur, followage, etc.).
+// Comportement de la commande.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum Kind {
-    Text, // répond simplement avec le texte
-    List, // !commandes : insère la liste des commandes pour tous
+    Text,         // répond simplement avec le texte
+    List,         // !commandes : insère la liste des commandes pour tous
+    Counter,      // augmente le compteur de 1
+    CounterReset, // remet le compteur à zéro
+}
+
+// Certaines commandes ne peuvent pas être ouvertes à tout le monde.
+fn level_allowed(kind: Kind, level: Level) -> bool {
+    match kind {
+        Kind::CounterReset => level != Level::Everyone,
+        _ => true,
+    }
 }
 
 fn default_reply_as() -> Role {
@@ -51,14 +61,23 @@ pub struct Command {
 pub struct BotConfig {
     pub enabled: bool, // interrupteur général
     pub commands: Vec<Command>,
+    #[serde(default)]
+    pub counter: u64, // valeur du compteur
 }
 
-fn builtin(name: &str, kind: Kind, response: &str, global: u32, user: u32) -> Command {
+fn builtin(
+    name: &str,
+    kind: Kind,
+    level: Level,
+    response: &str,
+    global: u32,
+    user: u32,
+) -> Command {
     Command {
         name: name.into(),
         enabled: true,
         response: response.into(),
-        level: Level::Everyone,
+        level,
         global_cooldown: global,
         user_cooldown: user,
         reply_as: Role::Bot,
@@ -73,34 +92,39 @@ impl BotConfig {
             builtin(
                 "discord",
                 Kind::Text,
-                "[@pseudo] Rejoins la communauté sur Discord : (lien à renseigner dans l'onglet Commandes)",
+                Level::Everyone,
+                "[@pseudo] Rejoins la communauté sur Discord : (lien à renseigner)",
                 10,
                 30,
             ),
             builtin(
                 "youtube",
                 Kind::Text,
+                Level::Everyone,
                 "[@pseudo] Retrouve la chaîne YouTube ici : (lien à renseigner)",
-                10,
-                30,
-            ),
-            builtin(
-                "tiktok",
-                Kind::Text,
-                "[@pseudo] Retrouve la chaîne TikTok ici : (lien à renseigner)",
                 10,
                 30,
             ),
             builtin(
                 "instagram",
                 Kind::Text,
+                Level::Everyone,
                 "[@pseudo] Retrouve la chaîne Instagram ici : (lien à renseigner)",
+                10,
+                30,
+            ),
+            builtin(
+                "tiktok",
+                Kind::Text,
+                Level::Everyone,
+                "[@pseudo] Retrouve la chaîne TikTok ici : (lien à renseigner)",
                 10,
                 30,
             ),
             builtin(
                 "reseaux",
                 Kind::Text,
+                Level::Everyone,
                 "[@pseudo] Retrouve tous les réseaux ici : (liens à renseigner)",
                 10,
                 30,
@@ -108,6 +132,7 @@ impl BotConfig {
             builtin(
                 "planning",
                 Kind::Text,
+                Level::Everyone,
                 "[@pseudo] Le planning des prochains streams : (à renseigner)",
                 10,
                 30,
@@ -115,6 +140,7 @@ impl BotConfig {
             builtin(
                 "lurk",
                 Kind::Text,
+                Level::Everyone,
                 "[@pseudo] passe en mode lurk, merci pour le soutien et à tout à l'heure !",
                 0,
                 30,
@@ -122,9 +148,26 @@ impl BotConfig {
             builtin(
                 "commandes",
                 Kind::List,
+                Level::Everyone,
                 "[@pseudo] Commandes disponibles : [commandes]",
                 10,
                 30,
+            ),
+            builtin(
+                "deathcounter",
+                Kind::Counter,
+                Level::Everyone,
+                "Oups n°[compteur] !",
+                10,
+                30,
+            ),
+            builtin(
+                "reset",
+                Kind::CounterReset,
+                Level::Moderator,
+                "[@pseudo] Compteur remis à zéro.",
+                0,
+                0,
             ),
         ]
     }
@@ -135,6 +178,7 @@ impl Default for BotConfig {
         Self {
             enabled: true,
             commands: Self::defaults(),
+            counter: 0,
         }
     }
 }
@@ -207,7 +251,12 @@ fn load_config(app: &AppHandle) -> BotConfig {
 
     // Ajoute les commandes fournies par l'application qui manqueraient (nouvelles versions).
     for def in BotConfig::defaults() {
-        if !config.commands.iter().any(|c| c.name == def.name) {
+        let exists = config
+            .commands
+            .iter()
+            .any(|c| c.builtin && c.kind == def.kind && c.kind != Kind::Text)
+            || config.commands.iter().any(|c| c.name == def.name);
+        if !exists {
             config.commands.push(def);
         }
     }
@@ -239,6 +288,38 @@ fn persist(app: &AppHandle) -> Result<(), String> {
 // Envoie une ligne au journal de l'interface.
 pub fn log(app: &AppHandle, message: impl Into<String>) {
     let _ = app.emit("bot-log", message.into());
+}
+
+// --- Compteur ---
+
+// Ajoute (ou retire) une valeur au compteur, sauvegarde, prévient l'interface.
+pub fn counter_adjust(app: &AppHandle, delta: i64) -> u64 {
+    let value = {
+        let state = app.state::<AppState>();
+        let mut config = state.bot.config.write().unwrap();
+        let next = (config.counter as i64 + delta).max(0) as u64;
+        config.counter = next;
+        next
+    };
+    if let Err(e) = persist(app) {
+        log(app, format!("Sauvegarde du compteur impossible : {e}"));
+    }
+    let _ = app.emit("bot-counter", value);
+    value
+}
+
+pub fn counter_reset(app: &AppHandle) -> u64 {
+    let value = {
+        let state = app.state::<AppState>();
+        let mut config = state.bot.config.write().unwrap();
+        config.counter = 0;
+        0u64
+    };
+    if let Err(e) = persist(app) {
+        log(app, format!("Sauvegarde du compteur impossible : {e}"));
+    }
+    let _ = app.emit("bot-counter", value);
+    value
 }
 
 // --- Validation ---
@@ -280,27 +361,48 @@ pub fn bot_set_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
     persist(&app)
 }
 
-// Met à jour une commande existante (nom, type et statut "fournie par l'application" ne changent pas).
+// Met à jour une commande existante, et la renomme si besoin. Renvoie le nom final.
 #[tauri::command]
-pub fn bot_update_command(app: AppHandle, command: Command) -> Result<(), String> {
+pub fn bot_update_command(
+    app: AppHandle,
+    command: Command,
+    new_name: String,
+) -> Result<String, String> {
     let response = clean_response(&command.response)?;
-    {
+    let new_name = validate_name(&new_name)?;
+
+    let final_name = {
         let state = app.state::<AppState>();
         let mut config = state.bot.config.write().unwrap();
-        let existing = config
+
+        let index = config
             .commands
-            .iter_mut()
-            .find(|c| c.name == command.name)
+            .iter()
+            .position(|c| c.name == command.name)
             .ok_or("Commande introuvable.")?;
 
+        if new_name != command.name && config.commands.iter().any(|c| c.name == new_name) {
+            return Err(format!("La commande !{new_name} existe déjà."));
+        }
+
+        let kind = config.commands[index].kind;
+        if !level_allowed(kind, command.level) {
+            return Err("Cette commande ne peut pas être ouverte à tout le monde.".into());
+        }
+
+        let existing = &mut config.commands[index];
+        existing.name = new_name.clone();
         existing.enabled = command.enabled;
         existing.response = response;
         existing.level = command.level;
         existing.global_cooldown = command.global_cooldown;
         existing.user_cooldown = command.user_cooldown;
         existing.reply_as = command.reply_as;
-    }
-    persist(&app)
+        new_name
+    };
+
+    persist(&app)?;
+    Ok(final_name)
 }
 
 // Crée une commande simple (réponse seulement).
@@ -345,4 +447,14 @@ pub fn bot_delete_command(app: AppHandle, name: String) -> Result<(), String> {
         }
     }
     persist(&app)
+}
+
+#[tauri::command]
+pub fn bot_counter_adjust(app: AppHandle, delta: i64) -> u64 {
+    counter_adjust(&app, delta)
+}
+
+#[tauri::command]
+pub fn bot_counter_reset(app: AppHandle) -> u64 {
+    counter_reset(&app)
 }

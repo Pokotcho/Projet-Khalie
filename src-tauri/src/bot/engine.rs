@@ -1,17 +1,18 @@
 use tauri::{AppHandle, Manager};
 
-use super::{log, Kind, Level};
+use super::{counter_adjust, counter_reset, log, Kind, Level};
 use crate::twitch::chat::{self, ChatMessage};
 use crate::twitch::Role;
 use crate::AppState;
 
-// Remplace les champs dynamiques ([@pseudo], [pseudo], [commandes]) dans une réponse.
-fn fill(template: &str, msg: &ChatMessage, commands: &str) -> String {
+// Remplace les champs dynamiques dans une réponse.
+fn fill(template: &str, msg: &ChatMessage, commands: &str, counter: u64) -> String {
     let name = who(msg);
     template
         .replace("[@pseudo]", &format!("@{name}"))
         .replace("[pseudo]", name)
         .replace("[commandes]", commands)
+        .replace("[compteur]", &counter.to_string())
 }
 
 fn who(msg: &ChatMessage) -> &str {
@@ -38,7 +39,7 @@ pub async fn handle(app: AppHandle, msg: ChatMessage) {
     let name = first.to_lowercase();
 
     // On copie ce dont on a besoin, sans garder de verrou pendant l'envoi.
-    let (enabled, command, public_list) = {
+    let (enabled, command, public_list, mut counter) = {
         let state = app.state::<AppState>();
         let config = state.bot.config.read().unwrap();
         let command = config.commands.iter().find(|c| c.name == name).cloned();
@@ -48,7 +49,7 @@ pub async fn handle(app: AppHandle, msg: ChatMessage) {
             .filter(|c| c.enabled && c.level == Level::Everyone)
             .map(|c| format!("!{}", c.name))
             .collect();
-        (config.enabled, command, list)
+        (config.enabled, command, list, config.counter)
     };
 
     if !enabled {
@@ -93,11 +94,19 @@ pub async fn handle(app: AppHandle, msg: ChatMessage) {
         return;
     }
 
+    // Action propre à la commande (compteur).
+    match command.kind {
+        Kind::Counter => counter = counter_adjust(&app, 1),
+        Kind::CounterReset => counter = counter_reset(&app),
+        Kind::Text | Kind::List => {}
+    }
+
     // Construction de la réponse.
-    let reply = match command.kind {
-        Kind::Text => fill(&command.response, &msg, ""),
-        Kind::List => fill(&command.response, &msg, &public_list.join(", ")),
+    let commands_text = match command.kind {
+        Kind::List => public_list.join(", "),
+        _ => String::new(),
     };
+    let reply = fill(&command.response, &msg, &commands_text, counter);
     let reply: String = reply.chars().take(500).collect();
 
     // Choix du compte qui écrit.

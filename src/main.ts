@@ -49,11 +49,12 @@ interface BotCommand {
   user_cooldown: number;
   reply_as: Role;
   builtin: boolean;
-  kind: "text" | "list";
+  kind: "text" | "list" | "counter" | "counter_reset";
 }
 interface BotConfig {
   enabled: boolean;
   commands: BotCommand[];
+  counter: number;
 }
 
 // --- État de l'interface ---
@@ -222,11 +223,12 @@ function labelled(text: string, control: HTMLElement): HTMLLabelElement {
 
 function buildCommandRow(cmd: BotCommand): HTMLElement {
   const status = $("#commands-status");
+  let currentName = cmd.name;
 
   const row = document.createElement("div");
   row.className = cmd.enabled ? "cmd" : "cmd disabled";
 
-  // En-tête : case à cocher, nom, suppression (commandes créées seulement).
+  // En-tête : case à cocher, nom modifiable, suppression (commandes créées seulement).
   const head = document.createElement("div");
   head.className = "cmd-head";
 
@@ -235,13 +237,19 @@ function buildCommandRow(cmd: BotCommand): HTMLElement {
   enabled.checked = cmd.enabled;
   enabled.title = "Activer / désactiver cette commande";
 
-  const title = document.createElement("strong");
-  title.textContent = `!${cmd.name}`;
+  const bang = document.createElement("strong");
+  bang.textContent = "!";
+
+  const nameInput = document.createElement("input");
+  nameInput.className = "name-input";
+  nameInput.value = cmd.name;
+  nameInput.maxLength = 25;
+  nameInput.title = "Nom de la commande (modifiable, puis Enregistrer)";
 
   const spacer = document.createElement("span");
   spacer.className = "spacer";
 
-  head.append(enabled, title, spacer);
+  head.append(enabled, bang, nameInput, spacer);
 
   if (!cmd.builtin) {
     const del = document.createElement("button");
@@ -249,8 +257,8 @@ function buildCommandRow(cmd: BotCommand): HTMLElement {
     del.textContent = "Supprimer";
     del.addEventListener("click", async () => {
       try {
-        await invoke("bot_delete_command", { name: cmd.name });
-        status.textContent = `!${cmd.name} supprimée`;
+        await invoke("bot_delete_command", { name: currentName });
+        status.textContent = `!${currentName} supprimée`;
         await loadCommands();
       } catch (e) {
         status.textContent = `Erreur : ${e}`;
@@ -265,8 +273,11 @@ function buildCommandRow(cmd: BotCommand): HTMLElement {
   response.rows = 2;
   response.maxLength = 500;
 
-  // Réglages.
-  const level = makeSelect(Object.entries(LEVEL_LABEL), cmd.level);
+  // Réglages. La commande de remise à zéro ne peut pas être ouverte à tout le monde.
+  const levelChoices = Object.entries(LEVEL_LABEL).filter(
+    ([value]) => !(cmd.kind === "counter_reset" && value === "everyone"),
+  );
+  const level = makeSelect(levelChoices, cmd.level);
   const replyAs = makeSelect(
     [
       ["bot", "Bot"],
@@ -300,6 +311,7 @@ function buildCommandRow(cmd: BotCommand): HTMLElement {
   const save = async () => {
     const updated: BotCommand = {
       ...cmd,
+      name: currentName,
       enabled: enabled.checked,
       response: response.value,
       level: level.value as Level,
@@ -308,15 +320,20 @@ function buildCommandRow(cmd: BotCommand): HTMLElement {
       user_cooldown: Number(userCd.value) || 0,
     };
     try {
-      await invoke("bot_update_command", { command: updated });
+      const finalName = await invoke<string>("bot_update_command", {
+        command: updated,
+        newName: nameInput.value,
+      });
+      currentName = finalName;
+      nameInput.value = finalName;
       row.classList.toggle("disabled", !enabled.checked);
-      status.textContent = `!${cmd.name} enregistrée`;
+      status.textContent = `!${finalName} enregistrée`;
     } catch (e) {
       status.textContent = `Erreur : ${e}`;
     }
   };
 
-  // La case à cocher agit tout de suite (utile en direct) ; le texte s'enregistre avec le bouton.
+  // La case à cocher agit tout de suite (utile en direct) ; le reste s'enregistre avec le bouton.
   enabled.addEventListener("change", save);
   saveBtn.addEventListener("click", save);
 
@@ -327,6 +344,7 @@ function buildCommandRow(cmd: BotCommand): HTMLElement {
 async function loadCommands() {
   const config = await invoke<BotConfig>("bot_get_state");
   $<HTMLInputElement>("#bot-enabled").checked = config.enabled;
+  $("#counter-value").textContent = String(config.counter);
 
   const list = $("#commands-list");
   list.replaceChildren();
@@ -341,7 +359,7 @@ async function createCommand() {
   const response = $<HTMLTextAreaElement>("#new-response");
   const level = $<HTMLSelectElement>("#new-level");
 
-  const command: BotCommand = {
+    const command: BotCommand = {
     name: name.value,
     enabled: true,
     response: response.value,
@@ -408,6 +426,20 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
   $("#new-add").addEventListener("click", createCommand);
 
+    // Boutons du compteur.
+  const setCounter = (value: number) => {
+    $("#counter-value").textContent = String(value);
+  };
+  $("#counter-minus").addEventListener("click", async () =>
+    setCounter(await invoke<number>("bot_counter_adjust", { delta: -1 })),
+  );
+  $("#counter-plus").addEventListener("click", async () =>
+    setCounter(await invoke<number>("bot_counter_adjust", { delta: 1 })),
+  );
+  $("#counter-reset").addEventListener("click", async () =>
+    setCounter(await invoke<number>("bot_counter_reset")),
+  );
+
   // Événements envoyés par Rust (on les écoute AVANT de restaurer les sessions).
   await listen<LoginInfo>("twitch-login-success", (event) => {
     const acc = event.payload;
@@ -438,6 +470,9 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   await listen<ChatMessage>("chat-message", (event) => addChatLine(event.payload));
   await listen<string>("bot-log", (event) => addBotLog(event.payload));
+  await listen<number>("bot-counter", (event) => {
+    $("#counter-value").textContent = String(event.payload);
+  });
 
   // Restauration des sessions sauvegardées.
   const restored = await invoke<LoginInfo[]>("twitch_restore");
