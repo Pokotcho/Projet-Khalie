@@ -22,21 +22,35 @@ pub enum Level {
 }
 
 // Comportement de la commande.
+// Comportement de la commande.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     Text,         // répond simplement avec le texte
     List,         // !commandes : insère la liste des commandes pour tous
     Counter,      // augmente le compteur de 1
+    #[serde(alias = "counterreset")]
     CounterReset, // remet le compteur à zéro
+    Title,        // !titre : change le titre du stream (compte du streamer)
+    Category,     // !categorie : change la catégorie (compte du streamer)
+    Shoutout,     // !so : shoutout officiel Twitch (compte du streamer)
+    Clip,         // !clip : crée un clip (compte du streamer)
+    Followage,    // !followage : depuis quand le viewer suit la chaîne
 }
 
 // Certaines commandes ne peuvent pas être ouvertes à tout le monde.
 fn level_allowed(kind: Kind, level: Level) -> bool {
     match kind {
-        Kind::CounterReset => level != Level::Everyone,
+        Kind::CounterReset | Kind::Title | Kind::Category | Kind::Shoutout => {
+            level != Level::Everyone
+        }
         _ => true,
     }
+}
+
+// Ces commandes agissent en silence : pas de texte de réponse à renseigner.
+fn needs_response(kind: Kind) -> bool {
+    !matches!(kind, Kind::Title | Kind::Category | Kind::Shoutout)
 }
 
 fn default_reply_as() -> Role {
@@ -168,6 +182,29 @@ impl BotConfig {
                 "[@pseudo] Compteur remis à zéro.",
                 0,
                 0,
+            ),
+
+            builtin("titre", Kind::Title, Level::Moderator, "", 0, 0),
+
+            builtin("categorie", Kind::Category, Level::Moderator, "", 0, 0),
+
+            builtin("so", Kind::Shoutout, Level::Moderator, "", 0, 0),
+
+            builtin(
+                "clip",
+                Kind::Clip,
+                Level::Moderator,
+                "[@pseudo] Clip créé : [lien]",
+                30,
+                60,
+            ),
+            builtin(
+                "followage",
+                Kind::Followage,
+                Level::Everyone,
+                "[@pseudo] suit la chaîne depuis [duree] (depuis le [date]).",
+                5,
+                15,
             ),
         ]
     }
@@ -362,13 +399,13 @@ pub fn bot_set_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
 }
 
 // Met à jour une commande existante, et la renomme si besoin. Renvoie le nom final.
+// Met à jour une commande existante, et la renomme si besoin. Renvoie le nom final.
 #[tauri::command]
 pub fn bot_update_command(
     app: AppHandle,
     command: Command,
     new_name: String,
 ) -> Result<String, String> {
-    let response = clean_response(&command.response)?;
     let new_name = validate_name(&new_name)?;
 
     let final_name = {
@@ -389,6 +426,11 @@ pub fn bot_update_command(
         if !level_allowed(kind, command.level) {
             return Err("Cette commande ne peut pas être ouverte à tout le monde.".into());
         }
+        let response = if needs_response(kind) {
+            clean_response(&command.response)?
+        } else {
+            String::new()
+        };
 
         let existing = &mut config.commands[index];
         existing.name = new_name.clone();

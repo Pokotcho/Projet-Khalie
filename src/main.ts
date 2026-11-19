@@ -49,13 +49,39 @@ interface BotCommand {
   user_cooldown: number;
   reply_as: Role;
   builtin: boolean;
-  kind: "text" | "list" | "counter" | "counter_reset";
+  kind:
+    | "text"
+    | "list"
+    | "counter"
+    | "counter_reset"
+    | "title"
+    | "category"
+    | "shoutout"
+    | "clip"
+    | "followage";
 }
 interface BotConfig {
   enabled: boolean;
   commands: BotCommand[];
   counter: number;
 }
+
+// Commandes qui agissent en silence : pas de texte de réponse.
+const SILENT_KINDS: BotCommand["kind"][] = ["title", "category", "shoutout"];
+// Commandes qui ne peuvent pas être ouvertes à tout le monde.
+const MOD_ONLY_KINDS: BotCommand["kind"][] = ["counter_reset", "title", "category", "shoutout"];
+
+const KIND_HINT: Partial<Record<BotCommand["kind"], string>> = {
+  list: "Liste des commandes accessibles à tous.",
+  counter: "Augmente le compteur de 1.",
+  counter_reset: "Remet le compteur à zéro.",
+  title: "Usage : !titre nouveau titre. Agit avec le compte du streamer, sans message dans le chat.",
+  category: "Usage : !categorie nom du jeu. Agit avec le compte du streamer, sans message dans le chat.",
+  shoutout:
+    "Usage : !so @pseudo. Shoutout officiel Twitch (chaîne en direct requise), sans message dans le chat.",
+  clip: "Crée un clip de la chaîne en direct, avec le compte du streamer, puis écrit son lien.",
+  followage: "Indique depuis quand le viewer suit la chaîne.",
+};
 
 // --- État de l'interface ---
 const accounts: Partial<Record<Role, LoginInfo>> = {};
@@ -224,6 +250,7 @@ function labelled(text: string, control: HTMLElement): HTMLLabelElement {
 function buildCommandRow(cmd: BotCommand): HTMLElement {
   const status = $("#commands-status");
   let currentName = cmd.name;
+  const silent = SILENT_KINDS.includes(cmd.kind);
 
   const row = document.createElement("div");
   row.className = cmd.enabled ? "cmd" : "cmd disabled";
@@ -267,15 +294,27 @@ function buildCommandRow(cmd: BotCommand): HTMLElement {
     head.append(del);
   }
 
-  // Zone de texte de la réponse.
+  row.append(head);
+
+  // Explication du rôle de la commande.
+  const hintText = KIND_HINT[cmd.kind];
+  if (hintText) {
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = hintText;
+    row.append(hint);
+  }
+
+  // Zone de texte de la réponse (absente pour les commandes silencieuses).
   const response = document.createElement("textarea");
   response.value = cmd.response;
   response.rows = 2;
   response.maxLength = 500;
+  response.hidden = silent;
 
-  // Réglages. La commande de remise à zéro ne peut pas être ouverte à tout le monde.
+  // Réglages. Certaines commandes ne peuvent pas être ouvertes à tout le monde.
   const levelChoices = Object.entries(LEVEL_LABEL).filter(
-    ([value]) => !(cmd.kind === "counter_reset" && value === "everyone"),
+    ([value]) => !(MOD_ONLY_KINDS.includes(cmd.kind) && value === "everyone"),
   );
   const level = makeSelect(levelChoices, cmd.level);
   const replyAs = makeSelect(
@@ -298,12 +337,11 @@ function buildCommandRow(cmd: BotCommand): HTMLElement {
 
   const options = document.createElement("div");
   options.className = "field-row";
-  options.append(
-    labelled("Accessible à", level),
-    labelled("Compte qui répond", replyAs),
-    labelled("Délai global (s)", globalCd),
-    labelled("Délai par viewer (s)", userCd),
-  );
+  options.append(labelled("Accessible à", level));
+  if (!silent) {
+    options.append(labelled("Compte qui répond", replyAs));
+  }
+  options.append(labelled("Délai global (s)", globalCd), labelled("Délai par viewer (s)", userCd));
 
   const saveBtn = document.createElement("button");
   saveBtn.textContent = "Enregistrer";
@@ -337,7 +375,7 @@ function buildCommandRow(cmd: BotCommand): HTMLElement {
   enabled.addEventListener("change", save);
   saveBtn.addEventListener("click", save);
 
-  row.append(head, response, options, saveBtn);
+  row.append(response, options, saveBtn);
   return row;
 }
 

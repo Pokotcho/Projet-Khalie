@@ -21,9 +21,19 @@ const CANCELLED: &str = "annulée";
 // ce compte devra se reconnecter pour les accorder.
 fn scopes_for(role: Role) -> &'static str {
     match role {
-        Role::Streamer => "user:read:chat user:write:chat",
+        Role::Streamer => {
+            "user:read:chat user:write:chat channel:manage:broadcast clips:edit \
+             moderator:manage:shoutouts moderator:read:followers"
+        }
         Role::Bot => "user:read:chat user:write:chat",
     }
+}
+
+// Vrai s'il manque des permissions à cette session.
+fn missing_scopes(role: Role, session: &TwitchSession) -> bool {
+    scopes_for(role)
+        .split_whitespace()
+        .any(|needed| !session.scopes.iter().any(|granted| granted == needed))
 }
 
 // Réponse de Twitch à la demande de code (renvoyée aussi à l'interface).
@@ -52,6 +62,7 @@ struct TwitchError {
 struct ValidateResponse {
     login: String,
     user_id: String,
+    scopes: Option<Vec<String>>,
 }
 
 // Session d'un compte, gardée en mémoire et dans le trousseau Windows.
@@ -63,6 +74,8 @@ pub struct TwitchSession {
     pub expires_at: u64,
     pub login: String,
     pub user_id: String,
+    #[serde(default)]
+    pub scopes: Vec<String>, // permissions accordées par le compte
 }
 
 // Ce qu'on a le droit d'envoyer à l'interface.
@@ -270,6 +283,7 @@ async fn refresh_session(
             expires_at: now_unix() + token.expires_in.unwrap_or(0),
             login: session.login.clone(),
             user_id: session.user_id.clone(),
+            scopes: session.scopes.clone(),
         })
     } else if status.is_client_error() && status != reqwest::StatusCode::TOO_MANY_REQUESTS {
         let err: TwitchError = resp.json().await.unwrap_or_default();
@@ -323,6 +337,7 @@ async fn complete_login(
         expires_at: now_unix() + token.expires_in.unwrap_or(0),
         login: who.login.clone(),
         user_id: who.user_id.clone(),
+        scopes: who.scopes.clone().unwrap_or_default(),
     };
 
     if let Err(e) = storage::save(role, &session) {
@@ -405,6 +420,7 @@ pub async fn twitch_logout(app: AppHandle, role: Role) -> Result<(), String> {
 }
 
 // Relit la session sauvegardée d'un rôle et la remet en service si possible.
+// Relit la session sauvegardée d'un rôle et la remet en service si possible.
 async fn restore_role(app: &AppHandle, role: Role) -> Option<LoginInfo> {
     // Déjà en mémoire (ex. rechargement de la page) ?
     let current = {
@@ -447,6 +463,32 @@ async fn restore_role(app: &AppHandle, role: Role) -> Option<LoginInfo> {
                 return None;
             }
         },
+    }
+
+    // Anciennes sessions : on demande à Twitch la liste des permissions accordées.
+    if session.scopes.is_empty() {
+        if let Ok(v) = validate_token(&client, &session.access_token).await {
+            session.scopes = v.scopes.unwrap_or_default();
+            let _ = storage::save(role, &session);
+        }
+    }
+
+    // Permissions manquantes (nouvelles fonctions) : le compte doit se reconnecter.
+    if missing_scopes(role, &session) {
+        println!(
+            "Session {} : permissions manquantes, reconnexion nécessaire.",
+            role.key()
+        );
+        let _ = revoke_token(&client, &session.access_token).await;
+        storage::clear(role);
+        let _ = app.emit(
+            "twitch-login-error",
+            RoleError {
+                role,
+                message: "Nouvelles permissions nécessaires : reconnecte ce compte.".into(),
+            },
+        );
+        return None;
     }
 
     let info = LoginInfo {
