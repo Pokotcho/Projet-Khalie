@@ -85,6 +85,20 @@ impl BotConfig {
                 30,
             ),
             builtin(
+                "tiktok",
+                Kind::Text,
+                "[@pseudo] Retrouve la chaîne TikTok ici : (lien à renseigner)",
+                10,
+                30,
+            ),
+            builtin(
+                "instagram",
+                Kind::Text,
+                "[@pseudo] Retrouve la chaîne Instagram ici : (lien à renseigner)",
+                10,
+                30,
+            ),
+            builtin(
                 "reseaux",
                 Kind::Text,
                 "[@pseudo] Retrouve tous les réseaux ici : (liens à renseigner)",
