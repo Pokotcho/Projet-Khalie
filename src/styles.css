@@ -178,3 +178,96 @@ ul.accounts {
   background: var(--card);
   color: inherit;
 }
+
+.tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.tab {
+  background: transparent;
+  color: inherit;
+  border-color: var(--border);
+}
+
+.tab.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.switch-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.cmd {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+}
+
+.cmd.disabled {
+  opacity: 0.6;
+}
+
+.cmd-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.cmd-head .spacer {
+  flex: 1;
+}
+
+.cmd textarea,
+#new-response {
+  width: 100%;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  resize: vertical;
+  margin-bottom: 8px;
+}
+
+.field-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.9rem;
+}
+
+.field input[type="number"] {
+  width: 70px;
+}
+
+.field input,
+.field select {
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: inherit;
+}
+
+.chat-log.small {
+  height: 140px;
+}

@@ -24,6 +24,7 @@ pub struct ChatMessage {
     pub text: String,
     pub from_bot: bool,      // message écrit par le compte du bot
     pub from_streamer: bool, // message écrit par le compte du streamer
+    pub is_moderator: bool,
 }
 
 // Démarre (ou redémarre) la lecture du chat avec le compte du streamer.
@@ -137,6 +138,7 @@ async fn run_connection(
                         *connected = true;
                         let _ = app.emit("chat-status", format!("Chat connecté ({target})"));
                     }
+
                     "notification" => {
                         if v["metadata"]["subscription_type"].as_str()
                             == Some("channel.chat.message")
@@ -150,6 +152,16 @@ async fn run_connection(
                                 id
                             };
 
+                            // Badge "moderator" dans la liste des badges du message.
+                            let is_moderator = ev["badges"]
+                                .as_array()
+                                .map(|badges| {
+                                    badges
+                                        .iter()
+                                        .any(|b| b["set_id"].as_str() == Some("moderator"))
+                                })
+                                .unwrap_or(false);
+
                             let chat = ChatMessage {
                                 message_id: ev["message_id"].as_str().unwrap_or("").into(),
                                 user_id: sender_id.into(),
@@ -161,8 +173,15 @@ async fn run_connection(
                                 text: ev["message"]["text"].as_str().unwrap_or("").into(),
                                 from_bot: bot_id.as_deref() == Some(sender_id),
                                 from_streamer: sender_id == session.user_id,
+                                is_moderator,
                             };
-                            let _ = app.emit("chat-message", chat);
+
+                            let _ = app.emit("chat-message", chat.clone());
+                            // Le bot traite le message sans bloquer la lecture du chat.
+                            tauri::async_runtime::spawn(crate::bot::engine::handle(
+                                app.clone(),
+                                chat,
+                            ));
                         }
                     }
                     "session_reconnect" => return "Twitch demande une reconnexion".into(),

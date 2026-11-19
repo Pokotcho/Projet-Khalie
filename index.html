@@ -15,7 +15,7 @@
       <p id="loading" class="hint">Vérification des connexions…</p>
 
       <div id="app" hidden>
-        <!-- Comptes connectés (apparaît dès qu'un compte est connecté) -->
+        <!-- Comptes connectés -->
         <section class="card" id="summary" hidden>
           <h2>Comptes connectés</h2>
           <ul id="summary-list" class="accounts"></ul>
@@ -66,7 +66,13 @@
           <p class="error" hidden></p>
         </section>
 
-        <!-- Chat : apparaît quand les deux comptes sont connectés -->
+        <!-- Onglets : visibles quand les deux comptes sont connectés -->
+        <nav id="tabs" class="tabs" hidden>
+          <button id="tab-chat" class="tab active">Chat</button>
+          <button id="tab-commands" class="tab">Commandes</button>
+        </nav>
+
+        <!-- Onglet Chat -->
         <section class="card" id="chat-section" hidden>
           <h2>Chat Twitch</h2>
           <p id="chat-status" class="hint">Chat : arrêté</p>
@@ -81,6 +87,56 @@
             <button id="send-btn">Envoyer</button>
           </div>
           <p id="send-status" class="hint"></p>
+        </section>
+
+        <!-- Onglet Commandes -->
+        <section id="commands-section" hidden>
+          <div class="card">
+            <h2>Commandes du bot</h2>
+            <label class="switch-row">
+              <input type="checkbox" id="bot-enabled" />
+              <strong>Bot actif</strong> (décoché : le bot ne répond plus à aucune commande)
+            </label>
+            <p class="hint">
+              Champs utilisables dans les réponses : <code>[@pseudo]</code> mentionne le viewer qui
+              a tapé la commande, <code>[pseudo]</code> écrit son nom sans @, et
+              <code>[commandes]</code> (pour !commandes) insère la liste des commandes accessibles à
+              tous.
+            </p>
+            <p id="commands-status" class="hint"></p>
+          </div>
+
+          <div id="commands-list"></div>
+
+          <div class="card">
+            <h2>Ajouter une commande simple</h2>
+            <div class="field-row">
+              <label class="field"
+                >Nom : !
+                <input id="new-name" placeholder="exemple" maxlength="25" />
+              </label>
+              <label class="field"
+                >Accessible à :
+                <select id="new-level">
+                  <option value="everyone">Tout le monde</option>
+                  <option value="moderator">Modérateurs</option>
+                  <option value="streamer">Streamer seulement</option>
+                </select>
+              </label>
+            </div>
+            <textarea
+              id="new-response"
+              rows="2"
+              maxlength="500"
+              placeholder="Réponse du bot, par exemple : [@pseudo] voici la réponse !"
+            ></textarea>
+            <button id="new-add">Ajouter la commande</button>
+          </div>
+
+          <div class="card">
+            <h2>Journal du bot</h2>
+            <div id="bot-log" class="chat-log small"></div>
+          </div>
         </section>
       </div>
     </main>

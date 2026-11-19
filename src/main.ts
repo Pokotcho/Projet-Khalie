@@ -3,8 +3,16 @@ import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 type Role = "streamer" | "bot";
+type Level = "everyone" | "moderator" | "streamer";
+type Tab = "chat" | "commands";
+
 const ROLES: Role[] = ["streamer", "bot"];
 const ROLE_LABEL: Record<Role, string> = { streamer: "STREAMER", bot: "BOT" };
+const LEVEL_LABEL: Record<Level, string> = {
+  everyone: "Tout le monde",
+  moderator: "Modérateurs",
+  streamer: "Streamer seulement",
+};
 
 interface DeviceCode {
   device_code: string;
@@ -30,12 +38,29 @@ interface ChatMessage {
   text: string;
   from_bot: boolean;
   from_streamer: boolean;
+  is_moderator: boolean;
+}
+interface BotCommand {
+  name: string;
+  enabled: boolean;
+  response: string;
+  level: Level;
+  global_cooldown: number;
+  user_cooldown: number;
+  reply_as: Role;
+  builtin: boolean;
+  kind: "text" | "list";
+}
+interface BotConfig {
+  enabled: boolean;
+  commands: BotCommand[];
 }
 
 // --- État de l'interface ---
 const accounts: Partial<Record<Role, LoginInfo>> = {};
 const pending: Record<Role, boolean> = { streamer: false, bot: false };
 const errors: Partial<Record<Role, string>> = {};
+let currentTab: Tab = "chat";
 
 const $ = <T extends HTMLElement = HTMLElement>(selector: string): T =>
   document.querySelector<T>(selector)!;
@@ -44,6 +69,7 @@ const $ = <T extends HTMLElement = HTMLElement>(selector: string): T =>
 function render() {
   const hasStreamer = !!accounts.streamer;
   const hasBot = !!accounts.bot;
+  const both = hasStreamer && hasBot;
 
   // Cartes de connexion : streamer d'abord, puis bot.
   const showCard: Record<Role, boolean> = {
@@ -88,8 +114,18 @@ function render() {
   }
   $("#summary").hidden = !hasStreamer && !hasBot;
 
-  // Le chat n'apparaît que lorsque les deux comptes sont connectés.
-  $("#chat-section").hidden = !(hasStreamer && hasBot);
+  // Onglets : seulement quand les deux comptes sont connectés.
+  $("#tabs").hidden = !both;
+  $("#chat-section").hidden = !(both && currentTab === "chat");
+  $("#commands-section").hidden = !(both && currentTab === "commands");
+  $("#tab-chat").classList.toggle("active", currentTab === "chat");
+  $("#tab-commands").classList.toggle("active", currentTab === "commands");
+}
+
+function switchTab(tab: Tab) {
+  currentTab = tab;
+  render();
+  if (tab === "commands") loadCommands();
 }
 
 // --- Connexion / déconnexion ---
@@ -164,6 +200,183 @@ async function sendMessage() {
   }
 }
 
+// --- Commandes du bot ---
+function makeSelect(options: [string, string][], value: string): HTMLSelectElement {
+  const select = document.createElement("select");
+  for (const [val, label] of options) {
+    const opt = document.createElement("option");
+    opt.value = val;
+    opt.textContent = label;
+    select.appendChild(opt);
+  }
+  select.value = value;
+  return select;
+}
+
+function labelled(text: string, control: HTMLElement): HTMLLabelElement {
+  const label = document.createElement("label");
+  label.className = "field";
+  label.append(`${text} `, control);
+  return label;
+}
+
+function buildCommandRow(cmd: BotCommand): HTMLElement {
+  const status = $("#commands-status");
+
+  const row = document.createElement("div");
+  row.className = cmd.enabled ? "cmd" : "cmd disabled";
+
+  // En-tête : case à cocher, nom, suppression (commandes créées seulement).
+  const head = document.createElement("div");
+  head.className = "cmd-head";
+
+  const enabled = document.createElement("input");
+  enabled.type = "checkbox";
+  enabled.checked = cmd.enabled;
+  enabled.title = "Activer / désactiver cette commande";
+
+  const title = document.createElement("strong");
+  title.textContent = `!${cmd.name}`;
+
+  const spacer = document.createElement("span");
+  spacer.className = "spacer";
+
+  head.append(enabled, title, spacer);
+
+  if (!cmd.builtin) {
+    const del = document.createElement("button");
+    del.className = "btn-small";
+    del.textContent = "Supprimer";
+    del.addEventListener("click", async () => {
+      try {
+        await invoke("bot_delete_command", { name: cmd.name });
+        status.textContent = `!${cmd.name} supprimée`;
+        await loadCommands();
+      } catch (e) {
+        status.textContent = `Erreur : ${e}`;
+      }
+    });
+    head.append(del);
+  }
+
+  // Zone de texte de la réponse.
+  const response = document.createElement("textarea");
+  response.value = cmd.response;
+  response.rows = 2;
+  response.maxLength = 500;
+
+  // Réglages.
+  const level = makeSelect(Object.entries(LEVEL_LABEL), cmd.level);
+  const replyAs = makeSelect(
+    [
+      ["bot", "Bot"],
+      ["streamer", "Streamer"],
+    ],
+    cmd.reply_as,
+  );
+  const globalCd = document.createElement("input");
+  globalCd.type = "number";
+  globalCd.min = "0";
+  globalCd.max = "3600";
+  globalCd.value = String(cmd.global_cooldown);
+  const userCd = document.createElement("input");
+  userCd.type = "number";
+  userCd.min = "0";
+  userCd.max = "3600";
+  userCd.value = String(cmd.user_cooldown);
+
+  const options = document.createElement("div");
+  options.className = "field-row";
+  options.append(
+    labelled("Accessible à", level),
+    labelled("Compte qui répond", replyAs),
+    labelled("Délai global (s)", globalCd),
+    labelled("Délai par viewer (s)", userCd),
+  );
+
+  const saveBtn = document.createElement("button");
+  saveBtn.textContent = "Enregistrer";
+
+  const save = async () => {
+    const updated: BotCommand = {
+      ...cmd,
+      enabled: enabled.checked,
+      response: response.value,
+      level: level.value as Level,
+      reply_as: replyAs.value as Role,
+      global_cooldown: Number(globalCd.value) || 0,
+      user_cooldown: Number(userCd.value) || 0,
+    };
+    try {
+      await invoke("bot_update_command", { command: updated });
+      row.classList.toggle("disabled", !enabled.checked);
+      status.textContent = `!${cmd.name} enregistrée`;
+    } catch (e) {
+      status.textContent = `Erreur : ${e}`;
+    }
+  };
+
+  // La case à cocher agit tout de suite (utile en direct) ; le texte s'enregistre avec le bouton.
+  enabled.addEventListener("change", save);
+  saveBtn.addEventListener("click", save);
+
+  row.append(head, response, options, saveBtn);
+  return row;
+}
+
+async function loadCommands() {
+  const config = await invoke<BotConfig>("bot_get_state");
+  $<HTMLInputElement>("#bot-enabled").checked = config.enabled;
+
+  const list = $("#commands-list");
+  list.replaceChildren();
+  for (const cmd of config.commands) {
+    list.appendChild(buildCommandRow(cmd));
+  }
+}
+
+async function createCommand() {
+  const status = $("#commands-status");
+  const name = $<HTMLInputElement>("#new-name");
+  const response = $<HTMLTextAreaElement>("#new-response");
+  const level = $<HTMLSelectElement>("#new-level");
+
+  const command: BotCommand = {
+    name: name.value,
+    enabled: true,
+    response: response.value,
+    level: level.value as Level,
+    global_cooldown: 10,
+    user_cooldown: 30,
+    reply_as: "bot",
+    builtin: false,
+    kind: "text",
+  };
+
+  try {
+    await invoke("bot_create_command", { command });
+    name.value = "";
+    response.value = "";
+    status.textContent = "Commande ajoutée";
+    await loadCommands();
+  } catch (e) {
+    status.textContent = `Erreur : ${e}`;
+  }
+}
+
+function addBotLog(message: string) {
+  const log = $("#bot-log");
+  const line = document.createElement("div");
+  line.className = "chat-line";
+  line.textContent = `${new Date().toLocaleTimeString("fr-FR")}  ${message}`;
+  log.appendChild(line);
+
+  while (log.children.length > 100) {
+    log.removeChild(log.firstChild!);
+  }
+  log.scrollTop = log.scrollHeight;
+}
+
 // --- Démarrage ---
 window.addEventListener("DOMContentLoaded", async () => {
   // Boutons des cartes de connexion.
@@ -173,11 +386,27 @@ window.addEventListener("DOMContentLoaded", async () => {
     card.querySelector(".btn-cancel")!.addEventListener("click", () => disconnect(role));
   }
 
+  // Onglets.
+  $("#tab-chat").addEventListener("click", () => switchTab("chat"));
+  $("#tab-commands").addEventListener("click", () => switchTab("commands"));
+
   // Envoi de messages.
   $("#send-btn").addEventListener("click", sendMessage);
   $("#send-input").addEventListener("keydown", (e) => {
     if ((e as KeyboardEvent).key === "Enter") sendMessage();
   });
+
+  // Commandes : interrupteur général et création.
+  $<HTMLInputElement>("#bot-enabled").addEventListener("change", async (e) => {
+    const checked = (e.target as HTMLInputElement).checked;
+    try {
+      await invoke("bot_set_enabled", { enabled: checked });
+      $("#commands-status").textContent = checked ? "Bot activé" : "Bot désactivé";
+    } catch (err) {
+      $("#commands-status").textContent = `Erreur : ${err}`;
+    }
+  });
+  $("#new-add").addEventListener("click", createCommand);
 
   // Événements envoyés par Rust (on les écoute AVANT de restaurer les sessions).
   await listen<LoginInfo>("twitch-login-success", (event) => {
@@ -208,6 +437,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
 
   await listen<ChatMessage>("chat-message", (event) => addChatLine(event.payload));
+  await listen<string>("bot-log", (event) => addBotLog(event.payload));
 
   // Restauration des sessions sauvegardées.
   const restored = await invoke<LoginInfo[]>("twitch_restore");

@@ -1,3 +1,4 @@
+mod bot;
 mod twitch;
 
 use std::sync::atomic::AtomicU64;
@@ -44,6 +45,7 @@ pub struct AppState {
     pub streamer_attempt: AtomicU64,
     pub bot_attempt: AtomicU64,
     pub chat_task: Mutex<Option<JoinHandle<()>>>,
+    pub bot: bot::BotState,
 }
 
 impl AppState {
@@ -53,6 +55,7 @@ impl AppState {
             streamer_attempt: AtomicU64::new(0),
             bot_attempt: AtomicU64::new(0),
             chat_task: Mutex::new(None),
+            bot: bot::BotState::new(),
         }
     }
 
@@ -103,6 +106,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::new())
         .setup(|app| {
+            // Charge les réglages du bot enregistrés.
+            bot::init(app.handle());
+
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(twitch::auth::token_keeper(handle));
             Ok(())
@@ -111,7 +117,12 @@ pub fn run() {
             twitch::auth::twitch_login_start,
             twitch::auth::twitch_logout,
             twitch::auth::twitch_restore,
-            twitch::chat::send_chat_message
+            twitch::chat::send_chat_message,
+            bot::bot_get_state,
+            bot::bot_set_enabled,
+            bot::bot_update_command,
+            bot::bot_create_command,
+            bot::bot_delete_command
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
