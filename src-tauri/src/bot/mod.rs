@@ -1,3 +1,4 @@
+pub mod auto;
 pub mod engine;
 
 use std::collections::HashMap;
@@ -5,6 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -77,6 +79,42 @@ pub struct BotConfig {
     pub commands: Vec<Command>,
     #[serde(default)]
     pub counter: u64, // valeur du compteur
+    #[serde(default)]
+    pub auto: AutoSettings, // réglages des messages automatiques
+    #[serde(default)]
+    pub auto_messages: Vec<AutoMessage>,
+}
+
+// Réglages communs à tous les messages automatiques.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoSettings {
+    pub enabled: bool,        // interrupteur général des messages automatiques
+    pub only_when_live: bool, // n'envoyer que quand le stream est en direct
+    pub min_chat_lines: u32,  // messages minimum dans le chat depuis le dernier message auto
+    pub min_gap_min: u32,     // minutes minimum entre deux messages auto
+}
+
+impl Default for AutoSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            only_when_live: true,
+            min_chat_lines: 5,
+            min_gap_min: 2,
+        }
+    }
+}
+
+// Un message envoyé automatiquement à intervalle régulier.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoMessage {
+    pub id: u64,
+    pub name: String, // pour se repérer dans la liste
+    pub enabled: bool,
+    pub text: String,
+    pub interval_min: u32, // minutes entre deux envois de CE message
+    #[serde(default = "default_reply_as")]
+    pub reply_as: Role,
 }
 
 fn builtin(
@@ -216,6 +254,8 @@ impl Default for BotConfig {
             enabled: true,
             commands: Self::defaults(),
             counter: 0,
+            auto: AutoSettings::default(),
+            auto_messages: Vec::new(),
         }
     }
 }
@@ -226,6 +266,8 @@ pub struct BotState {
     pub client: reqwest::Client,
     global_last: Mutex<HashMap<String, Instant>>,
     user_last: Mutex<HashMap<(String, String), Instant>>,
+    pub live: AtomicBool,     // la chaîne est-elle en direct ?
+    pub chat_lines: AtomicU64, // nombre de messages vus dans le chat depuis le démarrage
 }
 
 impl BotState {
@@ -235,6 +277,8 @@ impl BotState {
             client: reqwest::Client::new(),
             global_last: Mutex::new(HashMap::new()),
             user_last: Mutex::new(HashMap::new()),
+            live: AtomicBool::new(false),
+            chat_lines: AtomicU64::new(0),
         }
     }
 
@@ -682,4 +726,86 @@ pub fn bot_counter_adjust(app: AppHandle, delta: i64) -> u64 {
 #[tauri::command]
 pub fn bot_counter_reset(app: AppHandle) -> u64 {
     counter_reset(&app)
+}
+
+// --- Messages automatiques ---
+
+fn validate_auto(name: &str, text: &str, interval: u32) -> Result<(String, String), String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 40 {
+        return Err("Donne un nom court (40 caractères max) au message.".into());
+    }
+    let text = clean_response(text)?;
+    if !(5..=1440).contains(&interval) {
+        return Err("L'intervalle doit être compris entre 5 et 1440 minutes.".into());
+    }
+    Ok((name.to_string(), text))
+}
+
+#[tauri::command]
+pub fn bot_get_live(state: State<'_, AppState>) -> bool {
+    state.bot.live.load(Ordering::Relaxed)
+}
+
+#[tauri::command]
+pub fn bot_auto_set_settings(app: AppHandle, settings: AutoSettings) -> Result<(), String> {
+    if settings.min_chat_lines > 100 || settings.min_gap_min > 60 {
+        return Err("Valeurs hors limites (chat : 0 à 100, écart : 0 à 60 minutes).".into());
+    }
+    {
+        let state = app.state::<AppState>();
+        state.bot.config.write().unwrap().auto = settings;
+    }
+    persist(&app)
+}
+
+#[tauri::command]
+pub fn bot_auto_create(app: AppHandle, message: AutoMessage) -> Result<(), String> {
+    let (name, text) = validate_auto(&message.name, &message.text, message.interval_min)?;
+    {
+        let state = app.state::<AppState>();
+        let mut config = state.bot.config.write().unwrap();
+        if config.auto_messages.len() >= 50 {
+            return Err("50 messages automatiques au maximum.".into());
+        }
+        config.auto_messages.push(AutoMessage {
+            id: chrono::Utc::now().timestamp_millis() as u64,
+            name,
+            enabled: true,
+            text,
+            interval_min: message.interval_min,
+            reply_as: message.reply_as,
+        });
+    }
+    persist(&app)
+}
+
+#[tauri::command]
+pub fn bot_auto_update(app: AppHandle, message: AutoMessage) -> Result<(), String> {
+    let (name, text) = validate_auto(&message.name, &message.text, message.interval_min)?;
+    {
+        let state = app.state::<AppState>();
+        let mut config = state.bot.config.write().unwrap();
+        let existing = config
+            .auto_messages
+            .iter_mut()
+            .find(|m| m.id == message.id)
+            .ok_or("Message introuvable.")?;
+        existing.name = name;
+        existing.enabled = message.enabled;
+        existing.text = text;
+        existing.interval_min = message.interval_min;
+        existing.reply_as = message.reply_as;
+    }
+    persist(&app)
+}
+
+#[tauri::command]
+pub fn bot_auto_delete(app: AppHandle, id: u64) -> Result<(), String> {
+    {
+        let state = app.state::<AppState>();
+        let mut config = state.bot.config.write().unwrap();
+        config.auto_messages.retain(|m| m.id != id);
+    }
+    persist(&app)
 }

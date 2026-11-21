@@ -4,7 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 
 type Role = "streamer" | "bot";
 type Level = "everyone" | "moderator" | "streamer";
-type Tab = "chat" | "commands";
+type Tab = "chat" | "commands" | "auto";
 
 const ROLES: Role[] = ["streamer", "bot"];
 const ROLE_LABEL: Record<Role, string> = { streamer: "STREAMER", bot: "BOT" };
@@ -60,10 +60,26 @@ interface BotCommand {
     | "clip"
     | "followage";
 }
+interface AutoSettings {
+  enabled: boolean;
+  only_when_live: boolean;
+  min_chat_lines: number;
+  min_gap_min: number;
+}
+interface AutoMessage {
+  id: number;
+  name: string;
+  enabled: boolean;
+  text: string;
+  interval_min: number;
+  reply_as: Role;
+}
 interface BotConfig {
   enabled: boolean;
   commands: BotCommand[];
   counter: number;
+  auto: AutoSettings;
+  auto_messages: AutoMessage[];
 }
 
 // Commandes qui agissent en silence : pas de texte de réponse.
@@ -145,14 +161,17 @@ function render() {
   $("#tabs").hidden = !both;
   $("#chat-section").hidden = !(both && currentTab === "chat");
   $("#commands-section").hidden = !(both && currentTab === "commands");
+  $("#auto-section").hidden = !(both && currentTab === "auto");
   $("#tab-chat").classList.toggle("active", currentTab === "chat");
   $("#tab-commands").classList.toggle("active", currentTab === "commands");
+  $("#tab-auto").classList.toggle("active", currentTab === "auto");
 }
 
 function switchTab(tab: Tab) {
   currentTab = tab;
   render();
   if (tab === "commands") loadCommands();
+  if (tab === "auto") loadAuto();
 }
 
 // --- Connexion / déconnexion ---
@@ -433,6 +452,160 @@ function addBotLog(message: string) {
   log.scrollTop = log.scrollHeight;
 }
 
+// --- Messages automatiques ---
+function collectAutoSettings(): AutoSettings {
+  return {
+    enabled: $<HTMLInputElement>("#auto-enabled").checked,
+    only_when_live: $<HTMLInputElement>("#auto-only-live").checked,
+    min_chat_lines: Number($<HTMLInputElement>("#auto-min-lines").value) || 0,
+    min_gap_min: Number($<HTMLInputElement>("#auto-min-gap").value) || 0,
+  };
+}
+
+async function saveAutoSettings() {
+  const status = $("#auto-status");
+  try {
+    await invoke("bot_auto_set_settings", { settings: collectAutoSettings() });
+    status.textContent = "Réglages enregistrés";
+  } catch (e) {
+    status.textContent = `Erreur : ${e}`;
+  }
+}
+
+function buildAutoRow(msg: AutoMessage): HTMLElement {
+  const status = $("#auto-status");
+
+  const row = document.createElement("div");
+  row.className = msg.enabled ? "cmd" : "cmd disabled";
+
+  const head = document.createElement("div");
+  head.className = "cmd-head";
+
+  const enabled = document.createElement("input");
+  enabled.type = "checkbox";
+  enabled.checked = msg.enabled;
+  enabled.title = "Activer / désactiver ce message";
+
+  const nameInput = document.createElement("input");
+  nameInput.className = "name-input";
+  nameInput.value = msg.name;
+  nameInput.maxLength = 40;
+  nameInput.title = "Nom du message (pour te repérer)";
+
+  const spacer = document.createElement("span");
+  spacer.className = "spacer";
+
+  const del = document.createElement("button");
+  del.className = "btn-small";
+  del.textContent = "Supprimer";
+  del.addEventListener("click", async () => {
+    try {
+      await invoke("bot_auto_delete", { id: msg.id });
+      status.textContent = `« ${msg.name} » supprimé`;
+      await loadAuto();
+    } catch (e) {
+      status.textContent = `Erreur : ${e}`;
+    }
+  });
+
+  head.append(enabled, nameInput, spacer, del);
+
+  const text = document.createElement("textarea");
+  text.className = "auto-textarea";
+  text.value = msg.text;
+  text.rows = 2;
+  text.maxLength = 500;
+
+  const interval = document.createElement("input");
+  interval.type = "number";
+  interval.min = "5";
+  interval.max = "1440";
+  interval.value = String(msg.interval_min);
+
+  const replyAs = makeSelect(
+    [
+      ["bot", "Bot"],
+      ["streamer", "Streamer"],
+    ],
+    msg.reply_as,
+  );
+
+  const options = document.createElement("div");
+  options.className = "field-row";
+  options.append(labelled("Toutes les (minutes)", interval), labelled("Compte qui écrit", replyAs));
+
+  const saveBtn = document.createElement("button");
+  saveBtn.textContent = "Enregistrer";
+
+  const save = async () => {
+    const updated: AutoMessage = {
+      ...msg,
+      name: nameInput.value,
+      enabled: enabled.checked,
+      text: text.value,
+      interval_min: Number(interval.value) || 0,
+      reply_as: replyAs.value as Role,
+    };
+    try {
+      await invoke("bot_auto_update", { message: updated });
+      row.classList.toggle("disabled", !enabled.checked);
+      status.textContent = `« ${updated.name} » enregistré`;
+    } catch (e) {
+      status.textContent = `Erreur : ${e}`;
+    }
+  };
+
+  // La case à cocher agit tout de suite ; le reste s'enregistre avec le bouton.
+  enabled.addEventListener("change", save);
+  saveBtn.addEventListener("click", save);
+
+  row.append(head, text, options, saveBtn);
+  return row;
+}
+
+async function loadAuto() {
+  const config = await invoke<BotConfig>("bot_get_state");
+  $<HTMLInputElement>("#auto-enabled").checked = config.auto.enabled;
+  $<HTMLInputElement>("#auto-only-live").checked = config.auto.only_when_live;
+  $<HTMLInputElement>("#auto-min-lines").value = String(config.auto.min_chat_lines);
+  $<HTMLInputElement>("#auto-min-gap").value = String(config.auto.min_gap_min);
+
+  const live = await invoke<boolean>("bot_get_live");
+  $("#live-state").textContent = live ? "en direct" : "hors ligne";
+
+  const list = $("#auto-list");
+  list.replaceChildren();
+  for (const msg of config.auto_messages) {
+    list.appendChild(buildAutoRow(msg));
+  }
+}
+
+async function createAuto() {
+  const status = $("#auto-status");
+  const name = $<HTMLInputElement>("#auto-new-name");
+  const text = $<HTMLTextAreaElement>("#auto-new-text");
+  const interval = $<HTMLInputElement>("#auto-new-interval");
+
+  const message: AutoMessage = {
+    id: 0,
+    name: name.value,
+    enabled: true,
+    text: text.value,
+    interval_min: Number(interval.value) || 0,
+    reply_as: "bot",
+  };
+
+  try {
+    await invoke("bot_auto_create", { message });
+    name.value = "";
+    text.value = "";
+    status.textContent = "Message ajouté";
+    await loadAuto();
+  } catch (e) {
+    status.textContent = `Erreur : ${e}`;
+  }
+}
+
 // --- Démarrage ---
 window.addEventListener("DOMContentLoaded", async () => {
   // Boutons des cartes de connexion.
@@ -445,6 +618,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   // Onglets.
   $("#tab-chat").addEventListener("click", () => switchTab("chat"));
   $("#tab-commands").addEventListener("click", () => switchTab("commands"));
+  $("#tab-auto").addEventListener("click", () => switchTab("auto"));
 
   // Envoi de messages.
   $("#send-btn").addEventListener("click", sendMessage);
@@ -463,6 +637,11 @@ window.addEventListener("DOMContentLoaded", async () => {
     }
   });
   $("#new-add").addEventListener("click", createCommand);
+
+  // Messages automatiques.
+  $("#auto-save-settings").addEventListener("click", saveAutoSettings);
+  $<HTMLInputElement>("#auto-enabled").addEventListener("change", saveAutoSettings);
+  $("#auto-new-add").addEventListener("click", createAuto);
 
   $("#open-logs").addEventListener("click", async () => {
     try {
@@ -518,6 +697,9 @@ window.addEventListener("DOMContentLoaded", async () => {
   await listen<string>("bot-log", (event) => addBotLog(event.payload));
   await listen<number>("bot-counter", (event) => {
     $("#counter-value").textContent = String(event.payload);
+  });
+  await listen<boolean>("bot-live", (event) => {
+    $("#live-state").textContent = event.payload ? "en direct" : "hors ligne";
   });
 
   // Restauration des sessions sauvegardées.

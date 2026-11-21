@@ -287,3 +287,15 @@ ul.accounts {
   align-items: center;
   gap: 8px;
 }
+
+.auto-textarea {
+  width: 100%;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  resize: vertical;
+  margin-bottom: 8px;
+}

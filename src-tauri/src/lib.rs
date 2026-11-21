@@ -125,6 +125,8 @@ pub fn run() {
 
             tauri::async_runtime::spawn(twitch::auth::token_keeper(app.handle().clone()));
             tauri::async_runtime::spawn(outbox::worker(app.handle().clone(), outbox_rx));
+            tauri::async_runtime::spawn(bot::auto::scheduler(app.handle().clone()));
+            tauri::async_runtime::spawn(bot::auto::live_watcher(app.handle().clone()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -139,6 +141,11 @@ pub fn run() {
             bot::bot_delete_command,
             bot::bot_counter_adjust,
             bot::bot_counter_reset,
+            bot::bot_get_live,
+            bot::bot_auto_set_settings,
+            bot::bot_auto_create,
+            bot::bot_auto_update,
+            bot::bot_auto_delete,
             diagnostics::open_logs_folder
         ])
         .run(tauri::generate_context!())

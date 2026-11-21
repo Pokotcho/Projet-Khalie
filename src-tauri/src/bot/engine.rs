@@ -198,6 +198,15 @@ pub async fn handle(app: AppHandle, msg: ChatMessage) {
         return;
     }
 
+        // On compte l'activité du chat (sert aux messages automatiques).
+    {
+        let state = app.state::<AppState>();
+        state
+            .bot
+            .chat_lines
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
     let Some(rest) = msg.text.trim().strip_prefix('!') else {
         return;
     };

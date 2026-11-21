@@ -199,3 +199,17 @@ pub async fn followed_at(
         .map_err(|e| format!("réponse illisible : {e}"))?;
     Ok(v["data"][0]["followed_at"].as_str().map(|d| d.to_string()))
 }
+
+// La chaîne du streamer est-elle en direct ?
+pub async fn is_live(client: &reqwest::Client, s: &TwitchSession) -> Result<bool, String> {
+    let url = format!("{API}/streams?user_id={}", s.user_id);
+    let resp = authed(client.get(url), s).send().await.map_err(net)?;
+    if !resp.status().is_success() {
+        return Err(describe_error(resp).await);
+    }
+    let v: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("réponse illisible : {e}"))?;
+    Ok(v["data"].as_array().map_or(false, |list| !list.is_empty()))
+}
