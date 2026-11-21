@@ -1,10 +1,13 @@
 mod bot;
+mod diagnostics;
+mod outbox;
 mod twitch;
 
 use std::sync::atomic::AtomicU64;
 use std::sync::Mutex;
 
 use tauri::async_runtime::JoinHandle;
+use tokio::sync::mpsc;
 
 use twitch::auth::TwitchSession;
 use twitch::Role;
@@ -46,16 +49,18 @@ pub struct AppState {
     pub bot_attempt: AtomicU64,
     pub chat_task: Mutex<Option<JoinHandle<()>>>,
     pub bot: bot::BotState,
+    pub outbox: mpsc::Sender<outbox::Outgoing>,
 }
 
 impl AppState {
-    pub fn new() -> Self {
+    pub fn new(outbox: mpsc::Sender<outbox::Outgoing>) -> Self {
         Self {
             accounts: Mutex::new(Accounts::default()),
             streamer_attempt: AtomicU64::new(0),
             bot_attempt: AtomicU64::new(0),
             chat_task: Mutex::new(None),
             bot: bot::BotState::new(),
+            outbox,
         }
     }
 
@@ -102,15 +107,24 @@ impl AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // File d'envoi des messages : l'émetteur va dans l'état, le récepteur à la tâche d'envoi.
+    let (outbox_tx, outbox_rx) = mpsc::channel::<outbox::Outgoing>(100);
+
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log::LevelFilter::Info)
+                .max_file_size(1_000_000)
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
-        .manage(AppState::new())
-        .setup(|app| {
+        .manage(AppState::new(outbox_tx))
+        .setup(move |app| {
             // Charge les réglages du bot enregistrés.
             bot::init(app.handle());
 
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(twitch::auth::token_keeper(handle));
+            tauri::async_runtime::spawn(twitch::auth::token_keeper(app.handle().clone()));
+            tauri::async_runtime::spawn(outbox::worker(app.handle().clone(), outbox_rx));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -124,7 +138,8 @@ pub fn run() {
             bot::bot_create_command,
             bot::bot_delete_command,
             bot::bot_counter_adjust,
-            bot::bot_counter_reset
+            bot::bot_counter_reset,
+            diagnostics::open_logs_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

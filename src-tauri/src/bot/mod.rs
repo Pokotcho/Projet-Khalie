@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Mutex, RwLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -271,20 +271,166 @@ impl BotState {
     }
 }
 
-// --- Fichier de configuration ---
+// --- Fichiers de configuration ---
 
-fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
+// Nombre de versions de bot.json conservées dans le dossier "backups".
+const KEEP_VERSIONS: usize = 10;
+
+// Le compteur est enregistré à part (counter.json), pour ne pas créer une nouvelle
+// version de bot.json à chaque mise à jour du compteur.
+#[derive(Serialize, Deserialize)]
+struct CounterFile {
+    value: u64,
+}
+
+fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir.join("bot.json"))
+    Ok(dir)
+}
+
+fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(data_dir(app)?.join("bot.json"))
+}
+
+fn counter_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(data_dir(app)?.join("counter.json"))
+}
+
+fn backups_dir(config_file: &std::path::Path) -> PathBuf {
+    config_file.with_file_name("backups")
+}
+
+// Écrit un fichier de façon sûre : fichier temporaire, puis renommage d'un seul coup.
+// On n'obtient jamais un fichier à moitié écrit.
+fn write_atomically(path: &std::path::Path, content: &str) -> Result<(), String> {
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, content).map_err(|e| format!("Écriture impossible : {e}"))?;
+    fs::rename(&tmp, path).map_err(|e| format!("Remplacement impossible : {e}"))
+}
+
+// Lit et décode bot.json (None s'il est absent ou illisible).
+fn read_config_file(path: &std::path::Path) -> Option<BotConfig> {
+    let text = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+// Contenu de référence d'une configuration, SANS le compteur (enregistré à part).
+// Sert à écrire bot.json et à savoir si les réglages ont réellement changé.
+fn canonical_json(config: &BotConfig) -> String {
+    let mut copy = config.clone();
+    copy.counter = 0;
+    serde_json::to_string_pretty(&copy).unwrap_or_default()
+}
+
+// Met de côté un fichier abîmé, pour ne rien détruire.
+fn set_aside(path: &std::path::Path) {
+    let aside = path.with_extension(format!("json.corrompu-{}", chrono::Utc::now().timestamp()));
+    match fs::rename(path, &aside) {
+        Ok(()) => ::log::warn!("bot.json illisible : mis de côté dans {}", aside.display()),
+        Err(e) => ::log::warn!("bot.json illisible, mise de côté impossible : {e}"),
+    }
+}
+
+// Liste les versions sauvegardées, de la plus récente à la plus ancienne.
+fn list_versions(config_file: &std::path::Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = fs::read_dir(backups_dir(config_file))
+        .map(|dir| {
+            dir.filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().map_or(false, |x| x == "json"))
+                .collect::<Vec<PathBuf>>()
+        })
+        .unwrap_or_default();
+    // Les noms contiennent la date : l'ordre alphabétique est l'ordre chronologique.
+    files.sort();
+    files.reverse();
+    files
+}
+
+// Garde l'état actuel de bot.json comme nouvelle version, s'il est valide et différent
+// de la dernière version enregistrée. Ne conserve que les KEEP_VERSIONS plus récentes.
+fn keep_version(config_file: &std::path::Path) {
+    // Jamais de copie d'un fichier abîmé.
+    let Some(current) = read_config_file(config_file) else {
+        return;
+    };
+    let current_json = canonical_json(&current);
+
+    // Identique à la dernière version : rien à ajouter.
+    let versions = list_versions(config_file);
+    if let Some(newest) = versions.first().and_then(|p| read_config_file(p)) {
+        if canonical_json(&newest) == current_json {
+            return;
+        }
+    }
+
+    let dir = backups_dir(config_file);
+    if fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S%3f");
+    let target = dir.join(format!("bot-{stamp}.json"));
+    if fs::write(&target, &current_json).is_err() {
+        return;
+    }
+
+    // On ne garde que les plus récentes.
+    for old in list_versions(config_file).into_iter().skip(KEEP_VERSIONS) {
+        let _ = fs::remove_file(old);
+    }
+}
+
+// Valeur du compteur : counter.json en priorité, sinon l'ancienne valeur qui était
+// enregistrée dans bot.json (migration, une seule fois).
+fn load_counter(app: &AppHandle, legacy: u64) -> u64 {
+    counter_path(app)
+        .ok()
+        .and_then(|p| fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str::<CounterFile>(&t).ok())
+        .map(|c| c.value)
+        .unwrap_or(legacy)
+}
+
+fn save_counter(app: &AppHandle, value: u64) -> Result<(), String> {
+    let path = counter_path(app)?;
+    let json = serde_json::to_string(&CounterFile { value }).map_err(|e| e.to_string())?;
+    write_atomically(&path, &json)
 }
 
 fn load_config(app: &AppHandle) -> BotConfig {
-    let mut config: BotConfig = config_path(app)
-        .ok()
-        .and_then(|p| fs::read_to_string(p).ok())
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
+    let mut restored = false;
+
+    let mut config = match config_path(app) {
+        Ok(path) => {
+            if let Some(c) = read_config_file(&path) {
+                c
+            } else {
+                // Fichier absent ou illisible : on met de côté l'éventuel fichier abîmé,
+                // puis on remonte les versions, de la plus récente à la plus ancienne.
+                if path.exists() {
+                    set_aside(&path);
+                }
+                let from_history = list_versions(&path)
+                    .iter()
+                    .find_map(|file| read_config_file(file))
+                    .or_else(|| read_config_file(&path.with_extension("json.bak")));
+
+                match from_history {
+                    Some(c) => {
+                        restored = true;
+                        ::log::warn!("Réglages du bot restaurés depuis une version sauvegardée");
+                        c
+                    }
+                    None => BotConfig::default(),
+                }
+            }
+        }
+        Err(_) => BotConfig::default(),
+    };
+
+    // Le compteur vient de counter.json (ou, une seule fois, de l'ancien bot.json).
+    config.counter = load_counter(app, config.counter);
 
     // Ajoute les commandes fournies par l'application qui manqueraient (nouvelles versions).
     for def in BotConfig::defaults() {
@@ -297,20 +443,54 @@ fn load_config(app: &AppHandle) -> BotConfig {
             config.commands.push(def);
         }
     }
+
+    // Après une restauration, on réécrit tout de suite un bot.json propre.
+    if restored {
+        if let Err(e) = save_config(app, &config) {
+            ::log::warn!("Réécriture après restauration impossible : {e}");
+        }
+    }
     config
 }
 
+// Enregistre bot.json uniquement si les réglages ont changé (le compteur n'en fait pas partie).
 fn save_config(app: &AppHandle, config: &BotConfig) -> Result<(), String> {
     let path = config_path(app)?;
-    let json = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
-    fs::write(path, json).map_err(|e| format!("Écriture de bot.json impossible : {e}"))
+    let new_json = canonical_json(config);
+
+    match read_config_file(&path) {
+        // Rien n'a changé : inutile de réécrire, et pas de nouvelle version.
+        Some(existing) if canonical_json(&existing) == new_json => return Ok(()),
+        Some(_) => {}
+        // Fichier présent mais abîmé : on le garde de côté avant de le remplacer.
+        None => {
+            if path.exists() {
+                set_aside(&path);
+            }
+        }
+    }
+
+    write_atomically(&path, &new_json)?;
+    keep_version(&path);
+    Ok(())
 }
 
 // Appelée au démarrage : charge les réglages enregistrés.
 pub fn init(app: &AppHandle) {
     let config = load_config(app);
+    let counter = config.counter;
     let state = app.state::<AppState>();
     *state.bot.config.write().unwrap() = config;
+
+    // Première version au démarrage (si elle manque), et premier counter.json (migration).
+    if let Ok(path) = config_path(app) {
+        keep_version(&path);
+    }
+    if counter_path(app).map(|p| !p.exists()).unwrap_or(false) {
+        if let Err(e) = save_counter(app, counter) {
+            ::log::warn!("Création de counter.json impossible : {e}");
+        }
+    }
 }
 
 fn persist(app: &AppHandle) -> Result<(), String> {
@@ -322,14 +502,17 @@ fn persist(app: &AppHandle) -> Result<(), String> {
     save_config(app, &config)
 }
 
-// Envoie une ligne au journal de l'interface.
+// Envoie une ligne au journal de l'interface (et au fichier de journaux).
 pub fn log(app: &AppHandle, message: impl Into<String>) {
-    let _ = app.emit("bot-log", message.into());
+    let message: String = message.into();
+    ::log::info!("[bot] {message}");
+    let _ = app.emit("bot-log", message);
 }
 
 // --- Compteur ---
 
-// Ajoute (ou retire) une valeur au compteur, sauvegarde, prévient l'interface.
+// Ajoute (ou retire) une valeur au compteur, l'enregistre dans counter.json,
+// et prévient l'interface.
 pub fn counter_adjust(app: &AppHandle, delta: i64) -> u64 {
     let value = {
         let state = app.state::<AppState>();
@@ -338,7 +521,7 @@ pub fn counter_adjust(app: &AppHandle, delta: i64) -> u64 {
         config.counter = next;
         next
     };
-    if let Err(e) = persist(app) {
+    if let Err(e) = save_counter(app, value) {
         log(app, format!("Sauvegarde du compteur impossible : {e}"));
     }
     let _ = app.emit("bot-counter", value);
@@ -352,7 +535,7 @@ pub fn counter_reset(app: &AppHandle) -> u64 {
         config.counter = 0;
         0u64
     };
-    if let Err(e) = persist(app) {
+    if let Err(e) = save_counter(app, value) {
         log(app, format!("Sauvegarde du compteur impossible : {e}"));
     }
     let _ = app.emit("bot-counter", value);

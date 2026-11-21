@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use serde::Serialize;
@@ -9,6 +9,7 @@ use tokio_tungstenite::tungstenite::Message;
 use super::auth::{TwitchSession, CLIENT_ID};
 use super::Role;
 use crate::AppState;
+use crate::outbox::Outgoing;
 
 const EVENTSUB_URL: &str = "wss://eventsub.wss.twitch.tv/ws";
 const SUBSCRIBE_URL: &str = "https://api.twitch.tv/helix/eventsub/subscriptions";
@@ -71,7 +72,7 @@ async fn chat_loop(app: AppHandle) {
         if connected {
             backoff = 1;
         }
-        println!("Chat déconnecté : {reason}");
+        log::info!("Chat déconnecté : {reason}");
         let _ = app.emit(
             "chat-status",
             format!("Chat déconnecté ({reason}). Nouvelle tentative dans {backoff} s…"),
@@ -278,9 +279,9 @@ pub async fn send_message(
     }
 }
 
-// Commande appelée par l'interface : "role" désigne le compte qui écrit.
+// Commande appelée par l'interface : le message est mis dans la file d'envoi.
 #[tauri::command]
-pub async fn send_chat_message(app: AppHandle, text: String, role: Role) -> Result<(), String> {
+pub fn send_chat_message(app: AppHandle, text: String, role: Role) -> Result<(), String> {
     let text = text.trim().to_string();
     if text.is_empty() {
         return Err("Message vide.".into());
@@ -289,15 +290,16 @@ pub async fn send_chat_message(app: AppHandle, text: String, role: Role) -> Resu
         return Err("Message trop long (500 caractères maximum).".into());
     }
 
-    let (sender, streamer) = {
-        let state = app.state::<AppState>();
-        let a = state.session(role);
-        let b = state.session(Role::Streamer);
-        (a, b)
-    };
-
-    let sender = sender.ok_or(format!("Le compte {} n'est pas connecté.", role.key()))?;
-    let streamer = streamer.ok_or("Le compte du streamer n'est pas connecté.")?;
-
-    send_message(&reqwest::Client::new(), &sender, &streamer.user_id, &text).await
+    let state = app.state::<AppState>();
+    if state.session(role).is_none() {
+        return Err(format!("Le compte {} n'est pas connecté.", role.key()));
+    }
+    state
+        .outbox
+        .try_send(Outgoing {
+            role,
+            text,
+            queued_at: Instant::now(),
+        })
+        .map_err(|_| "File d'envoi pleine, réessaie dans un instant.".to_string())
 }

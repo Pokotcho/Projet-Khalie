@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
@@ -76,6 +77,8 @@ pub struct TwitchSession {
     pub user_id: String,
     #[serde(default)]
     pub scopes: Vec<String>, // permissions accordées par le compte
+    #[serde(default)]
+    pub refreshed_at: u64, // date (en secondes) du dernier renouvellement
 }
 
 // Ce qu'on a le droit d'envoyer à l'interface.
@@ -284,6 +287,7 @@ async fn refresh_session(
             login: session.login.clone(),
             user_id: session.user_id.clone(),
             scopes: session.scopes.clone(),
+            refreshed_at: now_unix(),
         })
     } else if status.is_client_error() && status != reqwest::StatusCode::TOO_MANY_REQUESTS {
         let err: TwitchError = resp.json().await.unwrap_or_default();
@@ -338,10 +342,11 @@ async fn complete_login(
         login: who.login.clone(),
         user_id: who.user_id.clone(),
         scopes: who.scopes.clone().unwrap_or_default(),
+        refreshed_at: now_unix(),
     };
 
     if let Err(e) = storage::save(role, &session) {
-        println!("Sauvegarde de la session impossible : {e}");
+        log::info!("Sauvegarde de la session impossible : {e}");
     }
 
     {
@@ -412,8 +417,8 @@ pub async fn twitch_logout(app: AppHandle, role: Role) -> Result<(), String> {
         let client = reqwest::Client::new();
 
         match revoke_token(&client, &s.access_token).await {
-            Ok(()) => println!("Token {} révoqué chez Twitch.", role.key()),
-            Err(e) => println!("Révocation impossible : {e}"),
+            Ok(()) => log::info!("Token {} révoqué chez Twitch.", role.key()),
+            Err(e) => log::info!("Révocation impossible : {e}"),
         }
     }
     Ok(())
@@ -442,24 +447,24 @@ async fn restore_role(app: &AppHandle, role: Role) -> Option<LoginInfo> {
     match check_token(&client, &session.access_token).await {
         TokenState::Valid => {}
         TokenState::Unreachable(e) => {
-            println!("Twitch injoignable, session {} non activée : {e}", role.key());
+            log::info!("Twitch injoignable, session {} non activée : {e}", role.key());
             return None;
         }
         TokenState::Invalid => match refresh_session(&client, &session).await {
             Ok(new_session) => {
                 if let Err(e) = storage::save(role, &new_session) {
-                    println!("Sauvegarde de la session impossible : {e}");
+                    log::info!("Sauvegarde de la session impossible : {e}");
                 }
-                println!("Token {} rafraîchi au démarrage.", role.key());
+                log::info!("Token {} rafraîchi au démarrage.", role.key());
                 session = new_session;
             }
             Err(RefreshError::Rejected(e)) => {
-                println!("Session {} expirée, reconnexion nécessaire : {e}", role.key());
+                log::info!("Session {} expirée, reconnexion nécessaire : {e}", role.key());
                 storage::clear(role);
                 return None;
             }
             Err(RefreshError::Network(e)) => {
-                println!("Rafraîchissement impossible pour l'instant : {e}");
+                log::info!("Rafraîchissement impossible pour l'instant : {e}");
                 return None;
             }
         },
@@ -475,7 +480,7 @@ async fn restore_role(app: &AppHandle, role: Role) -> Option<LoginInfo> {
 
     // Permissions manquantes (nouvelles fonctions) : le compte doit se reconnecter.
     if missing_scopes(role, &session) {
-        println!(
+        log::info!(
             "Session {} : permissions manquantes, reconnexion nécessaire.",
             role.key()
         );
@@ -521,18 +526,47 @@ pub async fn twitch_restore(app: AppHandle) -> Vec<LoginInfo> {
 
 // --- Maintien des sessions ---
 
-// Tâche de fond : rafraîchit les tokens avant leur expiration.
+// Tâche de fond : maintient les sessions en bon état.
 pub async fn token_keeper(app: AppHandle) {
     let client = reqwest::Client::new();
+    let mut last_validation: HashMap<&'static str, Instant> = HashMap::new();
+
     loop {
         tokio::time::sleep(Duration::from_secs(60)).await;
+
         for role in [Role::Streamer, Role::Bot] {
-            keep_one(&app, &client, role).await;
+            let active = {
+                let state = app.state::<AppState>();
+                let a = state.session(role).is_some();
+                a
+            };
+
+            // Session sauvegardée mais pas encore active (ex. pas de réseau au démarrage) :
+            // on réessaie de la remettre en service.
+            if !active {
+                if storage::load(role).is_some() {
+                    if let Some(info) = restore_role(&app, role).await {
+                        log::info!("Session {} remise en service.", role.key());
+                        let _ = app.emit("twitch-login-success", info);
+                    }
+                }
+                continue;
+            }
+
+            // Validation demandée par Twitch au moins une fois par heure.
+            let due = last_validation
+                .get(role.key())
+                .map(|t| t.elapsed() >= Duration::from_secs(3600))
+                .unwrap_or(true);
+            keep_one(&app, &client, role, due).await;
+            if due {
+                last_validation.insert(role.key(), Instant::now());
+            }
         }
     }
 }
 
-async fn keep_one(app: &AppHandle, client: &reqwest::Client, role: Role) {
+async fn keep_one(app: &AppHandle, client: &reqwest::Client, role: Role, validate_now: bool) {
     let current = {
         let state = app.state::<AppState>();
         let s = state.session(role);
@@ -540,8 +574,22 @@ async fn keep_one(app: &AppHandle, client: &reqwest::Client, role: Role) {
     };
     let Some(session) = current else { return };
 
-    // Marge de 10 minutes avant l'expiration.
-    if session.expires_at > now_unix() + 600 {
+    // On rafraîchit si le token expire dans moins de 10 minutes, ou si le jeton de
+    // rafraîchissement a plus de 7 jours (pour repousser sa limite de 30 jours).
+    let mut must_refresh = session.expires_at <= now_unix() + 600
+        || now_unix().saturating_sub(session.refreshed_at) > 7 * 24 * 3600;
+
+    // Validation horaire : un token que Twitch refuse (autorisation retirée…) est détecté ici.
+    if validate_now && !must_refresh {
+        if let TokenState::Invalid = check_token(client, &session.access_token).await {
+            log::info!(
+                "Token {} refusé par Twitch lors de la validation horaire.",
+                role.key()
+            );
+            must_refresh = true;
+        }
+    }
+    if !must_refresh {
         return;
     }
 
@@ -555,15 +603,15 @@ async fn keep_one(app: &AppHandle, client: &reqwest::Client, role: Role) {
             };
             if applied {
                 if let Err(e) = storage::save(role, &new_session) {
-                    println!("Sauvegarde de la session impossible : {e}");
+                    log::info!("Sauvegarde de la session impossible : {e}");
                 }
-                println!("Token {} rafraîchi automatiquement.", role.key());
+                log::info!("Token {} rafraîchi automatiquement.", role.key());
             } else {
                 let _ = revoke_token(client, &new_session.access_token).await;
             }
         }
         Err(RefreshError::Rejected(e)) => {
-            println!(
+            log::info!(
                 "Session {} rejetée par Twitch, reconnexion nécessaire : {e}",
                 role.key()
             );
@@ -578,7 +626,7 @@ async fn keep_one(app: &AppHandle, client: &reqwest::Client, role: Role) {
             let _ = app.emit("twitch-session-lost", role);
         }
         Err(RefreshError::Network(e)) => {
-            println!("Rafraîchissement {} reporté (réseau) : {e}", role.key());
+            log::info!("Rafraîchissement {} reporté (réseau) : {e}", role.key());
         }
     }
 }

@@ -464,6 +464,14 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
   $("#new-add").addEventListener("click", createCommand);
 
+  $("#open-logs").addEventListener("click", async () => {
+    try {
+      await invoke("open_logs_folder");
+    } catch (e) {
+      $("#commands-status").textContent = `Erreur : ${e}`;
+    }
+  });
+
     // Boutons du compteur.
   const setCounter = (value: number) => {
     $("#counter-value").textContent = String(value);

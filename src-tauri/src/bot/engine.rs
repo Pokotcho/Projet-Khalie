@@ -3,7 +3,11 @@ use tauri::{AppHandle, Manager};
 
 use super::{counter_adjust, counter_reset, log, Command, Kind, Level};
 use crate::twitch::api;
-use crate::twitch::chat::{self, ChatMessage};
+
+use std::time::Instant;
+use crate::outbox::Outgoing;
+use crate::twitch::chat::ChatMessage;
+
 use crate::twitch::Role;
 use crate::AppState;
 
@@ -294,29 +298,25 @@ pub async fn handle(app: AppHandle, msg: ChatMessage) {
         return;
     };
     let reply: String = reply.chars().take(500).collect();
-
-    // Choix du compte qui écrit.
-    let (sender, streamer, client) = {
+    // La réponse part dans la file d'envoi, qui respecte les limites de Twitch.
+    let item = Outgoing {
+        role: command.reply_as,
+        text: reply,
+        queued_at: Instant::now(),
+    };
+    let queued = {
         let state = app.state::<AppState>();
-        let a = state.session(command.reply_as);
-        let b = state.session(Role::Streamer);
-        let c = state.bot.client.clone();
-        (a, b, c)
+        let r = state.outbox.try_send(item);
+        r
     };
-    let (Some(sender), Some(streamer)) = (sender, streamer) else {
-        log(
+    match queued {
+        Ok(()) => log(
             &app,
-            format!(
-                "!{} : compte {} non connecté, réponse non envoyée",
-                command.name,
-                command.reply_as.key()
-            ),
-        );
-        return;
-    };
-
-    match chat::send_message(&client, &sender, &streamer.user_id, &reply).await {
-        Ok(()) => log(&app, format!("!{} par {} : réponse envoyée", command.name, who(&msg))),
-        Err(e) => log(&app, format!("!{} : envoi impossible : {e}", command.name)),
+            format!("!{} par {} : réponse mise en file", command.name, who(&msg)),
+        ),
+        Err(_) => log(
+            &app,
+            format!("!{} : file d'envoi pleine, réponse abandonnée", command.name),
+        ),
     }
 }
