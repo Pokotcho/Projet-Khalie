@@ -1,4 +1,5 @@
 mod bot;
+mod db;
 mod diagnostics;
 mod outbox;
 mod twitch;
@@ -49,6 +50,7 @@ pub struct AppState {
     pub bot_attempt: AtomicU64,
     pub chat_task: Mutex<Option<JoinHandle<()>>>,
     pub bot: bot::BotState,
+    pub db: db::Db,
     pub outbox: mpsc::Sender<outbox::Outgoing>,
 }
 
@@ -60,6 +62,7 @@ impl AppState {
             bot_attempt: AtomicU64::new(0),
             chat_task: Mutex::new(None),
             bot: bot::BotState::new(),
+            db: db::Db::new(),
             outbox,
         }
     }
@@ -122,6 +125,7 @@ pub fn run() {
         .setup(move |app| {
             // Charge les réglages du bot enregistrés.
             bot::init(app.handle());
+            db::init(app.handle());            
 
             tauri::async_runtime::spawn(twitch::auth::token_keeper(app.handle().clone()));
             tauri::async_runtime::spawn(outbox::worker(app.handle().clone(), outbox_rx));
