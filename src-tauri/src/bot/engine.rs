@@ -198,7 +198,7 @@ pub async fn handle(app: AppHandle, msg: ChatMessage) {
         return;
     }
 
-        // On compte l'activité du chat (sert aux messages automatiques).
+    // On compte l'activité du chat (sert aux messages automatiques).
     {
         let state = app.state::<AppState>();
         state
@@ -207,9 +207,16 @@ pub async fn handle(app: AppHandle, msg: ChatMessage) {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
+    // Mémorise le viewer dans la base de données.
+    {
+        let state = app.state::<AppState>();
+        state.db.record_message(&msg.user_id, &msg.login, who(&msg));
+    }
+
     let Some(rest) = msg.text.trim().strip_prefix('!') else {
         return;
     };
+    
     let rest = rest.trim_start();
     let Some(first) = rest.split_whitespace().next() else {
         return;

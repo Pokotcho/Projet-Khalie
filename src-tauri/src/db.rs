@@ -1,7 +1,9 @@
 // Base de données SQLite : viewers, points, historique des follows.
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use rusqlite::Connection;
 use tauri::{AppHandle, Manager};
@@ -11,14 +13,44 @@ use crate::AppState;
 // Nombre de sauvegardes journalières conservées.
 const KEEP_BACKUPS: usize = 10;
 
+// Ce qui attend en mémoire avant d'être écrit dans la base.
+struct Pending {
+    login: String,
+    display_name: String,
+    messages: i64,
+}
+
 pub struct Db {
     conn: Mutex<Option<Connection>>,
+    pending: Mutex<HashMap<String, Pending>>,
 }
+
+// Crée la fiche du viewer, ou la met à jour s'il existe déjà.
+const UPSERT_VIEWER: &str = "
+    INSERT INTO viewers (twitch_id, login, display_name, first_seen, last_seen, messages)
+    VALUES (?1, ?2, ?3, ?4, ?4, ?5)
+    ON CONFLICT(twitch_id) DO UPDATE SET
+        login        = excluded.login,
+        display_name = excluded.display_name,
+        last_seen    = excluded.last_seen,
+        messages     = viewers.messages + excluded.messages";
+
+// Donne des points et du temps de présence (crée la fiche si le viewer n'existe pas encore).
+const UPSERT_PRESENCE: &str = "
+    INSERT INTO viewers (twitch_id, login, display_name, first_seen, last_seen, minutes_present, points)
+    VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6)
+    ON CONFLICT(twitch_id) DO UPDATE SET
+        login           = excluded.login,
+        display_name    = excluded.display_name,
+        last_seen       = excluded.last_seen,
+        minutes_present = viewers.minutes_present + excluded.minutes_present,
+        points          = viewers.points + excluded.points";
 
 impl Db {
     pub fn new() -> Self {
         Self {
             conn: Mutex::new(None),
+            pending: Mutex::new(HashMap::new()),
         }
     }
 
@@ -30,6 +62,80 @@ impl Db {
         let guard = self.conn.lock().unwrap();
         let conn = guard.as_ref().ok_or("Base de données non disponible.")?;
         f(conn).map_err(|e| format!("Erreur base de données : {e}"))
+    }
+
+    // Note un message d'un viewer en mémoire (l'écriture se fait par groupe, voir flush).
+    pub fn record_message(&self, twitch_id: &str, login: &str, display_name: &str) {
+        let mut map = self.pending.lock().unwrap();
+        let entry = map.entry(twitch_id.to_string()).or_insert(Pending {
+            login: String::new(),
+            display_name: String::new(),
+            messages: 0,
+        });
+        entry.login = login.to_string();
+        entry.display_name = display_name.to_string();
+        entry.messages += 1;
+    }
+
+    // Écrit tout ce qui attend en mémoire, en une seule opération.
+    // Renvoie le nombre de viewers écrits.
+    pub fn flush(&self) -> Result<usize, String> {
+        let batch: HashMap<String, Pending> = std::mem::take(&mut *self.pending.lock().unwrap());
+        if batch.is_empty() {
+            return Ok(0);
+        }
+        let now = chrono::Utc::now().timestamp();
+        let count = batch.len();
+
+        let result = self.with(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            {
+                let mut stmt = tx.prepare(UPSERT_VIEWER)?;
+                for (id, p) in &batch {
+                    stmt.execute(rusqlite::params![id, p.login, p.display_name, now, p.messages])?;
+                }
+            }
+            tx.commit()
+        });
+
+        // En cas d'échec, on remet tout en attente pour ne rien perdre.
+        if let Err(e) = result {
+            let mut map = self.pending.lock().unwrap();
+            for (id, p) in batch {
+                let entry = map.entry(id).or_insert(Pending {
+                    login: p.login,
+                    display_name: p.display_name,
+                    messages: 0,
+                });
+                entry.messages += p.messages;
+            }
+            return Err(e);
+        }
+        Ok(count)
+    }
+
+    // Donne `points` points et `minutes` minutes de présence à chaque viewer de la liste.
+    pub fn award_presence(
+        &self,
+        chatters: &[crate::twitch::api::Chatter],
+        points: i64,
+        minutes: i64,
+    ) -> Result<usize, String> {
+        if chatters.is_empty() {
+            return Ok(0);
+        }
+        let now = chrono::Utc::now().timestamp();
+        self.with(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            {
+                let mut stmt = tx.prepare(UPSERT_PRESENCE)?;
+                for c in chatters {
+                    stmt.execute(rusqlite::params![c.id, c.login, c.name, now, minutes, points])?;
+                }
+            }
+            tx.commit()?;
+            Ok(chatters.len())
+        })
     }
 }
 
@@ -181,5 +287,21 @@ pub fn init(app: &AppHandle) {
     {
         Ok(n) => ::log::info!("Base de données prête : {n} viewer(s) ({})", path.display()),
         Err(e) => ::log::warn!("{e}"),
+    }
+}
+
+// Écrit les messages en attente toutes les 5 secondes.
+pub async fn flusher(app: AppHandle) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let result = {
+            let state = app.state::<AppState>();
+            state.db.flush()
+        };
+        match result {
+            Ok(0) => {}
+            Ok(_) => {}
+            Err(e) => ::log::warn!("{e}"),
+        }
     }
 }

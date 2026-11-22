@@ -127,6 +127,8 @@ pub fn run() {
             bot::init(app.handle());
             db::init(app.handle());            
 
+            tauri::async_runtime::spawn(db::flusher(app.handle().clone()));   
+            tauri::async_runtime::spawn(bot::points::presence_loop(app.handle().clone()));         
             tauri::async_runtime::spawn(twitch::auth::token_keeper(app.handle().clone()));
             tauri::async_runtime::spawn(outbox::worker(app.handle().clone(), outbox_rx));
             tauri::async_runtime::spawn(bot::auto::scheduler(app.handle().clone()));
@@ -150,6 +152,7 @@ pub fn run() {
             bot::bot_auto_create,
             bot::bot_auto_update,
             bot::bot_auto_delete,
+            bot::bot_points_set_settings,
             diagnostics::open_logs_folder
         ])
         .run(tauri::generate_context!())

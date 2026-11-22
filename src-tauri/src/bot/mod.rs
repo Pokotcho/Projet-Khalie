@@ -1,5 +1,6 @@
 pub mod auto;
 pub mod engine;
+pub mod points;
 
 use std::collections::HashMap;
 use std::fs;
@@ -83,6 +84,8 @@ pub struct BotConfig {
     pub auto: AutoSettings, // réglages des messages automatiques
     #[serde(default)]
     pub auto_messages: Vec<AutoMessage>,
+    #[serde(default)]
+    pub points: PointsSettings, // réglages des points de présence
 }
 
 // Réglages communs à tous les messages automatiques.
@@ -115,6 +118,32 @@ pub struct AutoMessage {
     pub interval_min: u32, // minutes entre deux envois de CE message
     #[serde(default = "default_reply_as")]
     pub reply_as: Role,
+}
+
+// Réglages des points de présence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PointsSettings {
+    pub enabled: bool,
+    pub name: String,         // nom des points (ex. : « Khaliecoins »)
+    pub interval_min: u32,    // minutes entre deux distributions
+    pub amount: u32,          // points donnés à chaque distribution
+    pub excluded: Vec<String>, // pseudos (minuscules) qui ne gagnent rien
+}
+
+impl Default for PointsSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            name: "points".into(),
+            interval_min: 5,
+            amount: 10,
+            excluded: ["nightbot", "streamelements", "streamlabs", "moobot", "fossabot", "wizebot"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        }
+    }
 }
 
 fn builtin(
@@ -256,6 +285,7 @@ impl Default for BotConfig {
             counter: 0,
             auto: AutoSettings::default(),
             auto_messages: Vec::new(),
+            points: PointsSettings::default(),            
         }
     }
 }
@@ -806,6 +836,44 @@ pub fn bot_auto_delete(app: AppHandle, id: u64) -> Result<(), String> {
         let state = app.state::<AppState>();
         let mut config = state.bot.config.write().unwrap();
         config.auto_messages.retain(|m| m.id != id);
+    }
+    persist(&app)
+}
+
+// --- Points de présence ---
+
+#[tauri::command]
+pub fn bot_points_set_settings(app: AppHandle, settings: PointsSettings) -> Result<(), String> {
+    let name = settings.name.trim().to_string();
+    if name.is_empty() || name.chars().count() > 30 {
+        return Err("Le nom des points doit faire entre 1 et 30 caractères.".into());
+    }
+    if !(1..=60).contains(&settings.interval_min) {
+        return Err("L'intervalle doit être compris entre 1 et 60 minutes.".into());
+    }
+    if !(1..=10_000).contains(&settings.amount) {
+        return Err("Le montant doit être compris entre 1 et 10 000 points.".into());
+    }
+    let mut excluded: Vec<String> = settings
+        .excluded
+        .iter()
+        .map(|s| s.trim().trim_start_matches('@').to_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    excluded.sort();
+    excluded.dedup();
+    if excluded.len() > 100 {
+        return Err("100 comptes exclus au maximum.".into());
+    }
+    {
+        let state = app.state::<AppState>();
+        state.bot.config.write().unwrap().points = PointsSettings {
+            enabled: settings.enabled,
+            name,
+            interval_min: settings.interval_min,
+            amount: settings.amount,
+            excluded,
+        };
     }
     persist(&app)
 }

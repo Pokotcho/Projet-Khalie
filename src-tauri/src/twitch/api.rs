@@ -213,3 +213,50 @@ pub async fn is_live(client: &reqwest::Client, s: &TwitchSession) -> Result<bool
         .map_err(|e| format!("réponse illisible : {e}"))?;
     Ok(v["data"].as_array().map_or(false, |list| !list.is_empty()))
 }
+
+// Un viewer présent dans le chat.
+pub struct Chatter {
+    pub id: String,
+    pub login: String,
+    pub name: String,
+}
+
+// Liste des viewers connectés au chat de la chaîne (par pages de 1000).
+pub async fn get_chatters(
+    client: &reqwest::Client,
+    s: &TwitchSession,
+) -> Result<Vec<Chatter>, String> {
+    let mut all = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..20 {
+        let mut url = format!(
+            "{API}/chat/chatters?broadcaster_id={0}&moderator_id={0}&first=1000",
+            s.user_id
+        );
+        if let Some(c) = &cursor {
+            url.push_str(&format!("&after={}", urlencoding::encode(c)));
+        }
+        let resp = authed(client.get(url), s).send().await.map_err(net)?;
+        if !resp.status().is_success() {
+            return Err(describe_error(resp).await);
+        }
+        let v: Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("réponse illisible : {e}"))?;
+        for u in v["data"].as_array().into_iter().flatten() {
+            if let Some(id) = u["user_id"].as_str() {
+                all.push(Chatter {
+                    id: id.to_string(),
+                    login: u["user_login"].as_str().unwrap_or("").to_string(),
+                    name: u["user_name"].as_str().unwrap_or("").to_string(),
+                });
+            }
+        }
+        cursor = v["pagination"]["cursor"].as_str().map(|c| c.to_string());
+        if cursor.is_none() {
+            break;
+        }
+    }
+    Ok(all)
+}

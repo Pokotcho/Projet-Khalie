@@ -24,7 +24,7 @@ fn scopes_for(role: Role) -> &'static str {
     match role {
         Role::Streamer => {
             "user:read:chat user:write:chat channel:manage:broadcast clips:edit \
-             moderator:manage:shoutouts moderator:read:followers"
+             moderator:manage:shoutouts moderator:read:followers moderator:read:chatters"
         }
         Role::Bot => "user:read:chat user:write:chat",
     }
