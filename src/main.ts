@@ -49,6 +49,7 @@ interface BotCommand {
   user_cooldown: number;
   reply_as: Role;
   builtin: boolean;
+  cost: number;
   kind:
     | "text"
     | "list"
@@ -58,7 +59,13 @@ interface BotCommand {
     | "category"
     | "shoutout"
     | "clip"
-    | "followage";
+    | "followage"
+    | "follow"
+    | "give"
+    | "take"
+    | "streak"
+    | "best_streak"
+    | "points";
 }
 interface AutoSettings {
   enabled: boolean;
@@ -92,6 +99,7 @@ interface PointsSettings {
   streak_every: number;
   streak_bonus: number;
   stream_gap_min: number;
+  insufficient_message: string;
 }
 interface ViewerRow {
   twitch_id: string;
@@ -116,7 +124,24 @@ interface ViewersPage {
 // Commandes qui agissent en silence : pas de texte de réponse.
 const SILENT_KINDS: BotCommand["kind"][] = ["title", "category", "shoutout"];
 // Commandes qui ne peuvent pas être ouvertes à tout le monde.
-const MOD_ONLY_KINDS: BotCommand["kind"][] = ["counter_reset", "title", "category", "shoutout"];
+const MOD_ONLY_KINDS: BotCommand["kind"][] = [
+  "counter_reset",
+  "title",
+  "category",
+  "shoutout",
+  "give",
+  "take",
+];
+// Commandes rangées dans l'onglet Points (avec toutes les commandes qui ont un coût).
+const POINTS_KINDS: BotCommand["kind"][] = [
+  "follow",
+  "give",
+  "take",
+  "streak",
+  "best_streak",
+  "points",
+];
+const isPointsCommand = (c: BotCommand) => POINTS_KINDS.includes(c.kind) || c.cost > 0;
 
 const KIND_HINT: Partial<Record<BotCommand["kind"], string>> = {
   list: "Liste des commandes accessibles à tous.",
@@ -124,10 +149,14 @@ const KIND_HINT: Partial<Record<BotCommand["kind"], string>> = {
   counter_reset: "Remet le compteur à zéro.",
   title: "Usage : !titre nouveau titre. Agit avec le compte du streamer, sans message dans le chat.",
   category: "Usage : !categorie nom du jeu. Agit avec le compte du streamer, sans message dans le chat.",
-  shoutout:
-    "Usage : !so @pseudo. Shoutout officiel Twitch (chaîne en direct requise), sans message dans le chat.",
+  shoutout: "Usage : !so @pseudo. Shoutout officiel Twitch (chaîne en direct requise), sans message dans le chat.",
   clip: "Crée un clip de la chaîne en direct, avec le compte du streamer, puis écrit son lien.",
-  followage: "Indique depuis quand le viewer suit la chaîne.",
+  follow: "Indique la date du premier et du dernier follow du viewer.",
+  give: "Usage : !give 50 @pseudo. Donne des points.",
+  take: "Usage : !take 50 @pseudo. Retire des points, sans descendre sous 0.",
+  streak: "Affiche la série en cours (ou celle d'un autre : !streak @pseudo).",
+  best_streak: "Affiche la meilleure série (ou celle d'un autre : !beststreak @pseudo).",
+  points: "Affiche le solde de points (ou celui d'un autre : !points @pseudo).",
 };
 
 // --- État de l'interface ---
@@ -300,9 +329,10 @@ function labelled(text: string, control: HTMLElement): HTMLLabelElement {
   return label;
 }
 
-function buildCommandRow(cmd: BotCommand): HTMLElement {
-  const status = $("#commands-status");
+function buildCommandRow(cmd: BotCommand, statusSelector = "#commands-status"): HTMLElement {
+  const status = $(statusSelector);
   let currentName = cmd.name;
+  let savedCost = cmd.cost;
   const silent = SILENT_KINDS.includes(cmd.kind);
 
   const row = document.createElement("div");
@@ -339,7 +369,7 @@ function buildCommandRow(cmd: BotCommand): HTMLElement {
       try {
         await invoke("bot_delete_command", { name: currentName });
         status.textContent = `!${currentName} supprimée`;
-        await loadCommands();
+        await refreshCommandLists();
       } catch (e) {
         status.textContent = `Erreur : ${e}`;
       }
@@ -387,6 +417,11 @@ function buildCommandRow(cmd: BotCommand): HTMLElement {
   userCd.min = "0";
   userCd.max = "3600";
   userCd.value = String(cmd.user_cooldown);
+  const cost = document.createElement("input");
+  cost.type = "number";
+  cost.min = "0";
+  cost.max = "1000000";
+  cost.value = String(cmd.cost);
 
   const options = document.createElement("div");
   options.className = "field-row";
@@ -395,6 +430,9 @@ function buildCommandRow(cmd: BotCommand): HTMLElement {
     options.append(labelled("Compte qui répond", replyAs));
   }
   options.append(labelled("Délai global (s)", globalCd), labelled("Délai par viewer (s)", userCd));
+  if (!silent) {
+    options.append(labelled("Coût (points)", cost));
+  }
 
   const saveBtn = document.createElement("button");
   saveBtn.textContent = "Enregistrer";
@@ -409,6 +447,7 @@ function buildCommandRow(cmd: BotCommand): HTMLElement {
       reply_as: replyAs.value as Role,
       global_cooldown: Number(globalCd.value) || 0,
       user_cooldown: Number(userCd.value) || 0,
+      cost: silent ? 0 : Number(cost.value) || 0,
     };
     try {
       const finalName = await invoke<string>("bot_update_command", {
@@ -419,6 +458,13 @@ function buildCommandRow(cmd: BotCommand): HTMLElement {
       nameInput.value = finalName;
       row.classList.toggle("disabled", !enabled.checked);
       status.textContent = `!${finalName} enregistrée`;
+
+      // Une commande qui gagne ou perd son coût change d'onglet.
+      const wasPoints = isPointsCommand({ ...cmd, cost: savedCost });
+      savedCost = updated.cost;
+      if (isPointsCommand(updated) !== wasPoints) {
+        await refreshCommandLists();
+      }
     } catch (e) {
       status.textContent = `Erreur : ${e}`;
     }
@@ -439,8 +485,61 @@ async function loadCommands() {
 
   const list = $("#commands-list");
   list.replaceChildren();
-  for (const cmd of config.commands) {
+  for (const cmd of config.commands.filter((c) => !isPointsCommand(c))) {
     list.appendChild(buildCommandRow(cmd));
+  }
+}
+
+async function loadPointsCommands() {
+  const config = await invoke<BotConfig>("bot_get_state");
+  const list = $("#points-commands-list");
+  list.replaceChildren();
+  for (const cmd of config.commands.filter(isPointsCommand)) {
+    list.appendChild(buildCommandRow(cmd, "#points-commands-status"));
+  }
+}
+
+async function refreshCommandLists() {
+  await loadCommands();
+  await loadPointsCommands();
+}
+
+async function createPaidCommand() {
+  const status = $("#points-commands-status");
+  const name = $<HTMLInputElement>("#pcmd-name");
+  const response = $<HTMLTextAreaElement>("#pcmd-response");
+  const level = $<HTMLSelectElement>("#pcmd-level");
+  const cost = $<HTMLInputElement>("#pcmd-cost");
+
+  const costValue = Number(cost.value) || 0;
+  if (costValue < 1) {
+    status.textContent =
+      "Indique un coût d'au moins 1 point (sinon crée la commande dans l'onglet Commandes).";
+    return;
+  }
+
+  const command: BotCommand = {
+    name: name.value,
+    enabled: true,
+    response: response.value,
+    level: level.value as Level,
+    global_cooldown: 10,
+    user_cooldown: 30,
+    reply_as: "bot",
+    builtin: false,
+    kind: "text",
+    cost: costValue,
+  };
+
+  try {
+    await invoke("bot_create_command", { command });
+    name.value = "";
+    response.value = "";
+    cost.value = "";
+    status.textContent = "Commande ajoutée";
+    await refreshCommandLists();
+  } catch (e) {
+    status.textContent = `Erreur : ${e}`;
   }
 }
 
@@ -460,6 +559,7 @@ async function createCommand() {
     reply_as: "bot",
     builtin: false,
     kind: "text",
+    cost: 0,
   };
 
   try {
@@ -662,6 +762,7 @@ function collectPointsSettings(): PointsSettings {
     streak_every: Number($<HTMLInputElement>("#points-streak-every").value) || 0,
     streak_bonus: Number($<HTMLInputElement>("#points-streak-bonus").value) || 0,
     stream_gap_min: Number($<HTMLInputElement>("#points-stream-gap").value) || 0,
+    insufficient_message: $<HTMLTextAreaElement>("#points-insufficient").value,
     excluded: $<HTMLTextAreaElement>("#points-excluded")
       .value.split(/[\s,;]+/)
       .filter((s) => s.length > 0),
@@ -727,8 +828,10 @@ async function loadPoints() {
   $<HTMLInputElement>("#points-streak-every").value = String(p.streak_every);
   $<HTMLInputElement>("#points-streak-bonus").value = String(p.streak_bonus);
   $<HTMLInputElement>("#points-stream-gap").value = String(p.stream_gap_min);
+  $<HTMLTextAreaElement>("#points-insufficient").value = p.insufficient_message;
   $<HTMLTextAreaElement>("#points-excluded").value = p.excluded.join("\n");
   await loadViewers();
+  await loadPointsCommands();
 }
 
 // --- Démarrage ---
@@ -775,6 +878,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("#viewers-refresh").addEventListener("click", loadViewers);
   $("#viewers-search").addEventListener("input", loadViewers);
   $("#viewers-sort").addEventListener("change", loadViewers);
+  $("#pcmd-add").addEventListener("click", createPaidCommand);
 
   $("#open-logs").addEventListener("click", async () => {
     try {

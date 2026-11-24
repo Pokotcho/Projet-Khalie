@@ -284,14 +284,7 @@ impl BotConfig {
                 30,
                 60,
             ),
-            builtin(
-                "followage",
-                Kind::Followage,
-                Level::Everyone,
-                "[@pseudo] suit la chaîne depuis [duree] (depuis le [date]).",
-                5,
-                15,
-            ),
+
             builtin(
                 "follow",
                 Kind::Follow,
@@ -573,6 +566,11 @@ fn load_config(app: &AppHandle) -> BotConfig {
     // Le compteur vient de counter.json (ou, une seule fois, de l'ancien bot.json).
     config.counter = load_counter(app, config.counter);
 
+    // !followage est retirée (remplacée par !follow).
+    let before = config.commands.len();
+    config.commands.retain(|c| !(c.builtin && c.kind == Kind::Followage));
+    let removed_obsolete = config.commands.len() != before;
+
     // Ajoute les commandes fournies par l'application qui manqueraient (nouvelles versions).
     for def in BotConfig::defaults() {
         let exists = config
@@ -586,7 +584,7 @@ fn load_config(app: &AppHandle) -> BotConfig {
     }
 
     // Après une restauration, on réécrit tout de suite un bot.json propre.
-    if restored {
+    if restored || removed_obsolete {
         if let Err(e) = save_config(app, &config) {
             ::log::warn!("Réécriture après restauration impossible : {e}");
         }
