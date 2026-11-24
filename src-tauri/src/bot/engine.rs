@@ -187,6 +187,63 @@ async fn run_streamer_action(
                 }
             }
         }
+
+        Kind::Follow => {
+            if msg.user_id == streamer.user_id {
+                return Some(fill("[@pseudo] tu es le streamer de cette chaîne !", msg, &[]));
+            }
+            match api::followed_at(&client, &streamer, &msg.user_id).await {
+                Ok(Some(date)) => match DateTime::parse_from_rfc3339(&date) {
+                    Ok(parsed) => {
+                        let result = {
+                            let state = app.state::<AppState>();
+                            state.db.record_follow(
+                                &msg.user_id,
+                                &msg.login,
+                                who(msg),
+                                parsed.timestamp(),
+                            )
+                        };
+                        match result {
+                            Ok((first, last)) => {
+                                let fmt = |t: i64| {
+                                    DateTime::<Utc>::from_timestamp(t, 0)
+                                        .map(|d| d.format("%d/%m/%Y").to_string())
+                                        .unwrap_or_default()
+                                };
+                                if fmt(first) == fmt(last) {
+                                    Some(fill(
+                                        "[@pseudo] suit la chaîne depuis le [dernier].",
+                                        msg,
+                                        &[("[dernier]", fmt(last))],
+                                    ))
+                                } else {
+                                    Some(fill(
+                                        &command.response,
+                                        msg,
+                                        &[("[premier]", fmt(first)), ("[dernier]", fmt(last))],
+                                    ))
+                                }
+                            }
+                            Err(e) => {
+                                log(app, format!("!{} : {e}", command.name));
+                                None
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        log(app, format!("!{} : date illisible ({date})", command.name));
+                        None
+                    }
+                },
+                Ok(None) => Some(fill("[@pseudo] ne suit pas encore la chaîne.", msg, &[])),
+                Err(e) => {
+                    log(app, format!("!{} : follow impossible : {e}", command.name));
+                    None
+                }
+            }
+        }
+
         _ => None,
     }
 }
@@ -207,7 +264,7 @@ pub async fn handle(app: AppHandle, msg: ChatMessage) {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-        // Mémorise le viewer dans la base de données. Son message compte comme une présence
+    // Mémorise le viewer dans la base de données. Son message compte comme une présence
     // au stream en cours, sauf pour le streamer et les comptes exclus (bots).
     {
         let state = app.state::<AppState>();
@@ -231,7 +288,6 @@ pub async fn handle(app: AppHandle, msg: ChatMessage) {
     let Some(rest) = msg.text.trim().strip_prefix('!') else {
         return;
     };
-    
     let rest = rest.trim_start();
     let Some(first) = rest.split_whitespace().next() else {
         return;
@@ -241,7 +297,7 @@ pub async fn handle(app: AppHandle, msg: ChatMessage) {
     let args = rest[first.len()..].trim().to_string();
 
     // On copie ce dont on a besoin, sans garder de verrou pendant l'envoi.
-    let (enabled, command, public_list, counter) = {
+    let (enabled, command, public_list, counter, insufficient, points_name) = {
         let state = app.state::<AppState>();
         let config = state.bot.config.read().unwrap();
         let command = config.commands.iter().find(|c| c.name == name).cloned();
@@ -251,7 +307,14 @@ pub async fn handle(app: AppHandle, msg: ChatMessage) {
             .filter(|c| c.enabled && c.level == Level::Everyone)
             .map(|c| format!("!{}", c.name))
             .collect();
-        (config.enabled, command, list, config.counter)
+        (
+            config.enabled,
+            command,
+            list,
+            config.counter,
+            config.points.insufficient_message.clone(),
+            config.points.name.clone(),
+        )
     };
 
     if !enabled {
@@ -278,6 +341,28 @@ pub async fn handle(app: AppHandle, msg: ChatMessage) {
         return;
     }
 
+    // Coût en points : le streamer ne paie jamais, les modérateurs paient comme les autres.
+    // On vérifie le solde avant les délais, pour ne pas consommer le délai d'une commande refusée.
+    let cost = command.cost as i64;
+    let pays = cost > 0 && !msg.from_streamer;
+    if pays {
+        let balance = {
+            let state = app.state::<AppState>();
+            state.db.balance(&msg.user_id)
+        };
+        match balance {
+            Ok(b) if b >= cost => {}
+            Ok(b) => {
+                not_enough(&app, &command, &msg, &insufficient, &points_name, cost, b);
+                return;
+            }
+            Err(e) => {
+                log(&app, format!("!{} : {e}", command.name));
+                return;
+            }
+        }
+    }
+
     // Délais : le streamer et les modérateurs n'y sont pas soumis.
     let bypass = msg.from_streamer || msg.is_moderator;
     let can_use = {
@@ -294,6 +379,29 @@ pub async fn handle(app: AppHandle, msg: ChatMessage) {
     if !can_use {
         log(&app, format!("!{} ignorée (délai non écoulé)", command.name));
         return;
+    }
+
+    // Paiement (une seule opération : jamais de solde négatif).
+    if pays {
+        let spent = {
+            let state = app.state::<AppState>();
+            state.db.try_spend(&msg.user_id, cost)
+        };
+        match spent {
+            Ok(true) => {}
+            Ok(false) => {
+                let b = {
+                    let state = app.state::<AppState>();
+                    state.db.balance(&msg.user_id).unwrap_or(0)
+                };
+                not_enough(&app, &command, &msg, &insufficient, &points_name, cost, b);
+                return;
+            }
+            Err(e) => {
+                log(&app, format!("!{} : {e}", command.name));
+                return;
+            }
+        }
     }
 
     // Exécution selon le type de commande.
@@ -319,13 +427,25 @@ pub async fn handle(app: AppHandle, msg: ChatMessage) {
             let value = counter_reset(&app);
             Some(fill(&command.response, &msg, &[("[compteur]", value.to_string())]))
         }
-        Kind::Title | Kind::Category | Kind::Shoutout | Kind::Clip | Kind::Followage => {
-            run_streamer_action(&app, &command, &msg, &args).await
+        Kind::Title
+        | Kind::Category
+        | Kind::Shoutout
+        | Kind::Clip
+        | Kind::Followage
+        | Kind::Follow => run_streamer_action(&app, &command, &msg, &args).await,
+        Kind::Give | Kind::Take | Kind::Streak | Kind::BestStreak | Kind::Points => {
+            run_points_action(&app, &command, &msg, &args).await
         }
     };
 
-    // Commande silencieuse (ou échec déjà journalisé) : rien à écrire.
+    // Commande silencieuse (ou échec déjà journalisé) : rien à écrire, et on rembourse.
     let Some(reply) = reply else {
+        if pays {
+            let state = app.state::<AppState>();
+            if let Err(e) = state.db.refund(&msg.user_id, cost) {
+                log(&app, format!("Remboursement impossible : {e}"));
+            }
+        }
         return;
     };
     let reply: String = reply.chars().take(500).collect();
@@ -349,5 +469,216 @@ pub async fn handle(app: AppHandle, msg: ChatMessage) {
             &app,
             format!("!{} : file d'envoi pleine, réponse abandonnée", command.name),
         ),
+    }
+}
+
+// Répond « solde insuffisant » (au plus une fois toutes les 10 s par viewer et par commande).
+fn not_enough(
+    app: &AppHandle,
+    command: &Command,
+    msg: &ChatMessage,
+    template: &str,
+    points_name: &str,
+    cost: i64,
+    balance: i64,
+) {
+    let state = app.state::<AppState>();
+    let may_reply = state.bot.try_use(
+        &format!("{}:solde", command.name),
+        &msg.user_id,
+        0,
+        10,
+        false,
+    );
+    if !may_reply {
+        return;
+    }
+    let text: String = fill(
+        template,
+        msg,
+        &[
+            ("[cout]", cost.to_string()),
+            ("[solde]", balance.to_string()),
+            ("[points]", points_name.to_string()),
+        ],
+    )
+    .chars()
+    .take(500)
+    .collect();
+    let _ = state.outbox.try_send(Outgoing {
+        role: command.reply_as,
+        text,
+        queued_at: Instant::now(),
+    });
+}
+
+// Pseudo cité en premier dans les arguments (sans @, en minuscules).
+fn mentioned(args: &str) -> Option<String> {
+    let word = args.split_whitespace().next()?;
+    let login = word.trim_start_matches('@').to_lowercase();
+    if !login.is_empty() && login.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        Some(login)
+    } else {
+        None
+    }
+}
+
+// « 50 @pseudo » (ou « @pseudo 50 ») : renvoie (montant, pseudo).
+fn parse_give(args: &str) -> Option<(i64, String)> {
+    let mut amount: Option<i64> = None;
+    let mut login: Option<String> = None;
+    for word in args.split_whitespace() {
+        if word.chars().all(|c| c.is_ascii_digit()) {
+            if amount.is_none() {
+                amount = word.parse::<i64>().ok();
+            }
+        } else if login.is_none() {
+            let l = word.trim_start_matches('@').to_lowercase();
+            if !l.is_empty() && l.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                login = Some(l);
+            }
+        }
+    }
+    // Seule limite : une valeur technique pour éviter tout dépassement de nombre.
+    let amount = amount.filter(|n| *n > 0 && *n <= 1_000_000_000_000)?;
+    Some((amount, login?))
+}
+
+// Retrouve la personne visée : (identifiant, pseudo, nom affiché).
+// Si elle n'est pas encore dans la base et que `create_if_missing` est vrai, on la cherche sur Twitch.
+async fn lookup_target(
+    app: &AppHandle,
+    msg: &ChatMessage,
+    login: &str,
+    create_if_missing: bool,
+) -> Result<(String, String, String), String> {
+    if login == msg.login.to_lowercase() {
+        return Ok((msg.user_id.clone(), msg.login.clone(), who(msg).to_string()));
+    }
+    let found = {
+        let state = app.state::<AppState>();
+        state.db.find_by_login(login)
+    };
+    match found {
+        Ok(Some((id, name))) => return Ok((id, login.to_string(), name)),
+        Ok(None) => {}
+        Err(e) => {
+            log(app, e);
+            return Err("erreur de base de données, réessaie plus tard.".into());
+        }
+    }
+    if !create_if_missing {
+        return Err(format!("je ne connais pas encore {login}."));
+    }
+    let (streamer, client) = {
+        let state = app.state::<AppState>();
+        let s = state.session(Role::Streamer);
+        let c = state.bot.client.clone();
+        (s, c)
+    };
+    let Some(streamer) = streamer else {
+        return Err("le compte du streamer n'est pas connecté.".into());
+    };
+    match api::get_user(&client, &streamer, login).await {
+        Ok((id, name)) => Ok((id, login.to_string(), name)),
+        Err(e) => Err(format!("{e}.")),
+    }
+}
+
+// Commandes liées aux points : !give, !take, !streak, !beststreak, !points.
+async fn run_points_action(
+    app: &AppHandle,
+    command: &Command,
+    msg: &ChatMessage,
+    args: &str,
+) -> Option<String> {
+    let points_name = {
+        let state = app.state::<AppState>();
+        let n = state.bot.config.read().unwrap().points.name.clone();
+        n
+    };
+
+    match command.kind {
+        Kind::Give | Kind::Take => {
+            let Some((amount, login)) = parse_give(args) else {
+                return Some(fill(
+                    &format!("[@pseudo] usage : !{} 50 @pseudo", command.name),
+                    msg,
+                    &[],
+                ));
+            };
+            let (id, login, display) = match lookup_target(app, msg, &login, true).await {
+                Ok(target) => target,
+                Err(e) => return Some(fill(&format!("[@pseudo] {e}"), msg, &[])),
+            };
+            let delta = if command.kind == Kind::Give { amount } else { -amount };
+            let result = {
+                let state = app.state::<AppState>();
+                state.db.adjust_points(&id, &login, &display, delta)
+            };
+            match result {
+                Ok((applied, balance)) => {
+                    log(
+                        app,
+                        format!(
+                            "!{} : {} {} {} à {} par {} (nouveau solde : {})",
+                            command.name,
+                            if applied >= 0 { "+" } else { "-" },
+                            applied.abs(),
+                            points_name,
+                            display,
+                            who(msg),
+                            balance
+                        ),
+                    );
+                    Some(fill(
+                        &command.response,
+                        msg,
+                        &[
+                            ("[montant]", applied.abs().to_string()),
+                            ("[cible]", display),
+                            ("[points]", points_name),
+                            ("[solde]", balance.to_string()),
+                        ],
+                    ))
+                }
+                Err(e) => {
+                    log(app, format!("!{} : {e}", command.name));
+                    None
+                }
+            }
+        }
+        // !streak, !beststreak et !points : seul le texte de réponse change.
+        _ => {
+            let (id, display) = match mentioned(args) {
+                None => (msg.user_id.clone(), who(msg).to_string()),
+                Some(login) => match lookup_target(app, msg, &login, false).await {
+                    Ok((id, _, display)) => (id, display),
+                    Err(e) => return Some(fill(&format!("[@pseudo] {e}"), msg, &[])),
+                },
+            };
+            let stats = {
+                let state = app.state::<AppState>();
+                state.db.stats(&id)
+            };
+            match stats {
+                Ok(s) => Some(fill(
+                    &command.response,
+                    msg,
+                    &[
+                        ("[cible]", display),
+                        ("[serie]", s.streak.to_string()),
+                        ("[meilleure_serie]", s.best_streak.to_string()),
+                        ("[streams]", s.streams.to_string()),
+                        ("[solde]", s.points.to_string()),
+                        ("[points]", points_name),
+                    ],
+                )),
+                Err(e) => {
+                    log(app, format!("!{} : {e}", command.name));
+                    None
+                }
+            }
+        }
     }
 }

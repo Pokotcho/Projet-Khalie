@@ -39,12 +39,18 @@ pub enum Kind {
     Shoutout,     // !so : shoutout officiel Twitch (compte du streamer)
     Clip,         // !clip : crée un clip (compte du streamer)
     Followage,    // !followage : depuis quand le viewer suit la chaîne
+    Follow,       // !follow : premier et dernier follow du viewer
+    Give,         // !give 50 @pseudo : donne des points (modérateurs)
+    Take,         // !take 50 @pseudo : retire des points (modérateurs)
+    Streak,       // !streak : série en cours
+    BestStreak,   // !beststreak : meilleure série
+    Points,       // !points : solde de points
 }
 
 // Certaines commandes ne peuvent pas être ouvertes à tout le monde.
 fn level_allowed(kind: Kind, level: Level) -> bool {
     match kind {
-        Kind::CounterReset | Kind::Title | Kind::Category | Kind::Shoutout => {
+        Kind::CounterReset | Kind::Title | Kind::Category | Kind::Shoutout | Kind::Give | Kind::Take => {
             level != Level::Everyone
         }
         _ => true,
@@ -72,6 +78,8 @@ pub struct Command {
     pub reply_as: Role,
     pub builtin: bool, // fournie par l'application : non supprimable
     pub kind: Kind,
+    #[serde(default)]
+    pub cost: u32, // coût en points (0 = gratuite)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,6 +140,7 @@ pub struct PointsSettings {
     pub streak_every: u32,     // bonus tous les X streams d'affilée (0 = désactivé)
     pub streak_bonus: u32,     // points donnés à chaque palier
     pub stream_gap_min: u32,   // deux directs séparés de moins de X minutes = un seul stream
+    pub insufficient_message: String, // réponse quand le solde ne suffit pas pour une commande
 }
 
 impl Default for PointsSettings {
@@ -148,6 +157,9 @@ impl Default for PointsSettings {
             streak_every: 5,
             streak_bonus: 100,
             stream_gap_min: 120,
+            insufficient_message:
+                "[@pseudo] il te faut [cout] [points] pour cette commande (tu en as [solde])."
+                    .into(),
         }
     }
 }
@@ -170,6 +182,7 @@ fn builtin(
         reply_as: Role::Bot,
         builtin: true,
         kind,
+        cost: 0,
     }
 }
 
@@ -276,6 +289,54 @@ impl BotConfig {
                 Kind::Followage,
                 Level::Everyone,
                 "[@pseudo] suit la chaîne depuis [duree] (depuis le [date]).",
+                5,
+                15,
+            ),
+            builtin(
+                "follow",
+                Kind::Follow,
+                Level::Everyone,
+                "[@pseudo] premier follow : [premier] — dernier follow : [dernier]",
+                5,
+                15,
+            ),
+            builtin(
+                "give",
+                Kind::Give,
+                Level::Moderator,
+                "[@pseudo] a donné [montant] [points] à [cible].",
+                0,
+                0,
+            ),
+            builtin(
+                "take",
+                Kind::Take,
+                Level::Moderator,
+                "[@pseudo] a retiré [montant] [points] à [cible].",
+                0,
+                0,
+            ),
+            builtin(
+                "streak",
+                Kind::Streak,
+                Level::Everyone,
+                "[cible] est sur une série de [serie] stream(s) d'affilée.",
+                5,
+                15,
+            ),
+            builtin(
+                "beststreak",
+                Kind::BestStreak,
+                Level::Everyone,
+                "Meilleure série de [cible] : [meilleure_serie] stream(s) d'affilée.",
+                5,
+                15,
+            ),
+            builtin(
+                "points",
+                Kind::Points,
+                Level::Everyone,
+                "[cible] a [solde] [points].",
                 5,
                 15,
             ),
@@ -695,6 +756,13 @@ pub fn bot_update_command(
             String::new()
         };
 
+        if command.cost > 1_000_000 {
+            return Err("Le coût ne peut pas dépasser 1 000 000 points.".into());
+        }
+        if command.cost > 0 && !needs_response(kind) {
+            return Err("Cette commande agit en silence : elle ne peut pas avoir de coût.".into());
+        }
+
         let existing = &mut config.commands[index];
         existing.name = new_name.clone();
         existing.enabled = command.enabled;
@@ -703,6 +771,7 @@ pub fn bot_update_command(
         existing.global_cooldown = command.global_cooldown;
         existing.user_cooldown = command.user_cooldown;
         existing.reply_as = command.reply_as;
+        existing.cost = command.cost;
         new_name
     };
 
@@ -731,6 +800,7 @@ pub fn bot_create_command(app: AppHandle, command: Command) -> Result<(), String
             reply_as: command.reply_as,
             builtin: false,
             kind: Kind::Text,
+            cost: command.cost.min(1_000_000),
         });
     }
     persist(&app)
@@ -869,6 +939,12 @@ pub fn bot_points_set_settings(app: AppHandle, settings: PointsSettings) -> Resu
     if !(1..=1440).contains(&settings.stream_gap_min) {
         return Err("L'écart entre deux directs doit être compris entre 1 et 1440 minutes.".into());
     }
+
+    let insufficient = settings.insufficient_message.trim().to_string();
+    if insufficient.is_empty() || insufficient.chars().count() > 500 {
+        return Err("Le message de solde insuffisant doit faire entre 1 et 500 caractères.".into());
+    }
+
     let mut excluded: Vec<String> = settings
         .excluded
         .iter()
@@ -891,6 +967,7 @@ pub fn bot_points_set_settings(app: AppHandle, settings: PointsSettings) -> Resu
             streak_every: settings.streak_every,
             streak_bonus: settings.streak_bonus,
             stream_gap_min: settings.stream_gap_min,
+            insufficient_message: insufficient,
         };
     }
     persist(&app)

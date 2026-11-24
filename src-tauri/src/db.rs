@@ -632,3 +632,176 @@ pub fn db_list_viewers(
         Ok(ViewersPage { rows, total })
     })
 }
+
+// --- Fonctions utilisées par les commandes de points ---
+
+pub struct ViewerStats {
+    pub points: i64,
+    pub streak: i64, // série en cours (0 si elle est cassée)
+    pub best_streak: i64,
+    pub streams: i64,
+    pub first_follow: Option<i64>,
+    pub last_follow: Option<i64>,
+}
+
+// Crée la fiche du viewer si elle n'existe pas encore.
+fn ensure_viewer(conn: &Connection, id: &str, login: &str, name: &str) -> rusqlite::Result<()> {
+    let now = chrono::Utc::now().timestamp();
+    conn.execute(
+        "INSERT OR IGNORE INTO viewers (twitch_id, login, display_name, first_seen, last_seen)
+         VALUES (?1, ?2, ?3, ?4, ?4)",
+        rusqlite::params![id, login, name, now],
+    )?;
+    Ok(())
+}
+
+impl Db {
+    // Solde d'un viewer (0 s'il n'est pas dans la base).
+    pub fn balance(&self, id: &str) -> Result<i64, String> {
+        self.with(|conn| {
+            Ok(conn
+                .query_row("SELECT points FROM viewers WHERE twitch_id = ?1", [id], |r| {
+                    r.get::<_, i64>(0)
+                })
+                .optional()?
+                .unwrap_or(0))
+        })
+    }
+
+    // Débite `cost` points seulement si le solde suffit (une seule opération, sans risque
+    // de passer sous zéro). Renvoie false si le solde est insuffisant.
+    pub fn try_spend(&self, id: &str, cost: i64) -> Result<bool, String> {
+        self.with(|conn| {
+            let changed = conn.execute(
+                "UPDATE viewers SET points = points - ?2 WHERE twitch_id = ?1 AND points >= ?2",
+                rusqlite::params![id, cost],
+            )?;
+            Ok(changed == 1)
+        })
+    }
+
+    pub fn refund(&self, id: &str, cost: i64) -> Result<(), String> {
+        self.with(|conn| {
+            conn.execute(
+                "UPDATE viewers SET points = points + ?2 WHERE twitch_id = ?1",
+                rusqlite::params![id, cost],
+            )
+            .map(|_| ())
+        })
+    }
+
+    // Donne (delta > 0) ou retire (delta < 0) des points. Un retrait ne descend jamais sous 0.
+    // Renvoie (variation réellement appliquée, nouveau solde).
+    pub fn adjust_points(
+        &self,
+        id: &str,
+        login: &str,
+        name: &str,
+        delta: i64,
+    ) -> Result<(i64, i64), String> {
+        self.with(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            ensure_viewer(&tx, id, login, name)?;
+            let balance: i64 = tx.query_row(
+                "SELECT points FROM viewers WHERE twitch_id = ?1",
+                [id],
+                |r| r.get(0),
+            )?;
+            let applied = if delta < 0 { -(balance.min(-delta)) } else { delta };
+            tx.execute(
+                "UPDATE viewers SET points = points + ?2 WHERE twitch_id = ?1",
+                rusqlite::params![id, applied],
+            )?;
+            tx.commit()?;
+            Ok((applied, balance + applied))
+        })
+    }
+
+    // Retrouve un viewer connu par son pseudo : (identifiant, nom affiché).
+    pub fn find_by_login(&self, login: &str) -> Result<Option<(String, String)>, String> {
+        self.with(|conn| {
+            conn.query_row(
+                "SELECT twitch_id, display_name FROM viewers WHERE login = ?1 COLLATE NOCASE",
+                [login],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+        })
+    }
+
+    // Solde, séries et dates de follow d'un viewer.
+    pub fn stats(&self, id: &str) -> Result<ViewerStats, String> {
+        let current = self.current_stream_id();
+        self.with(|conn| {
+            // Même règle que dans la liste : une série est « vivante » si le viewer était
+            // au dernier stream terminé (ou au précédent / en cours pendant un direct).
+            let threshold: i64 = if current != 0 {
+                previous_stream(conn, current)?.unwrap_or(0)
+            } else {
+                conn.query_row("SELECT COALESCE(MAX(id), 0) FROM streams", [], |r| r.get(0))?
+            };
+            let found = conn
+                .query_row(
+                    "SELECT points, streak, best_streak, streams_attended, last_stream_id,
+                            first_follow, last_follow
+                     FROM viewers WHERE twitch_id = ?1",
+                    [id],
+                    |r| {
+                        let streak: i64 = r.get(1)?;
+                        let last_stream: Option<i64> = r.get(4)?;
+                        Ok(ViewerStats {
+                            points: r.get(0)?,
+                            streak: if last_stream.map_or(false, |s| s >= threshold) {
+                                streak
+                            } else {
+                                0
+                            },
+                            best_streak: r.get(2)?,
+                            streams: r.get(3)?,
+                            first_follow: r.get(5)?,
+                            last_follow: r.get(6)?,
+                        })
+                    },
+                )
+                .optional()?;
+            Ok(found.unwrap_or(ViewerStats {
+                points: 0,
+                streak: 0,
+                best_streak: 0,
+                streams: 0,
+                first_follow: None,
+                last_follow: None,
+            }))
+        })
+    }
+
+    // Enregistre la date de follow actuelle (donnée par Twitch). Le premier follow est la plus
+    // ancienne date connue. Renvoie (premier follow, dernier follow).
+    pub fn record_follow(
+        &self,
+        id: &str,
+        login: &str,
+        name: &str,
+        followed_at: i64,
+    ) -> Result<(i64, i64), String> {
+        self.with(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            ensure_viewer(&tx, id, login, name)?;
+            tx.execute(
+                "UPDATE viewers SET
+                     last_follow = ?2,
+                     first_follow = CASE WHEN first_follow IS NULL OR ?2 < first_follow
+                                         THEN ?2 ELSE first_follow END
+                 WHERE twitch_id = ?1",
+                rusqlite::params![id, followed_at],
+            )?;
+            let dates: (i64, i64) = tx.query_row(
+                "SELECT first_follow, last_follow FROM viewers WHERE twitch_id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            tx.commit()?;
+            Ok(dates)
+        })
+    }
+}
