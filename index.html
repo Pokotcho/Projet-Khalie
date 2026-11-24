@@ -71,6 +71,7 @@
           <button id="tab-chat" class="tab active">Chat</button>
           <button id="tab-commands" class="tab">Commandes</button>
           <button id="tab-auto" class="tab">Messages auto</button>
+          <button id="tab-points" class="tab">Points</button>
         </nav>
 
         <!-- Onglet Chat -->
@@ -199,6 +200,82 @@
               class="auto-textarea"
             ></textarea>
             <button id="auto-new-add">Ajouter le message</button>
+          </div>
+        </section>
+        <!-- Onglet Points -->
+        <section id="points-section" hidden>
+          <div class="card">
+            <h2>Points de chaîne</h2>
+            <label class="switch-row">
+              <input type="checkbox" id="points-enabled" />
+              <strong>Points de présence actifs</strong> (distribués seulement pendant le direct)
+            </label>
+            <div class="field-row">
+              <label class="field">
+                Nom des points :
+                <input id="points-name" maxlength="30" />
+              </label>
+              <label class="field">
+                Toutes les (minutes) :
+                <input type="number" id="points-interval" min="1" max="60" />
+              </label>
+              <label class="field">
+                Points donnés à chaque fois :
+                <input type="number" id="points-amount" min="1" max="10000" />
+              </label>
+            </div>
+            <label class="field">
+              Comptes exclus (un pseudo par ligne) :
+              <textarea id="points-excluded" rows="4" class="auto-textarea"></textarea>
+            </label>
+            <p class="hint">Le streamer et le bot ne gagnent jamais de points.</p>
+            <button id="points-save">Enregistrer les réglages</button>
+            <p id="points-status" class="hint"></p>
+          </div>
+
+          <div class="card">
+            <h2>Viewers</h2>
+            <div class="field-row">
+              <label class="field">
+                Rechercher :
+                <input id="viewers-search" placeholder="pseudo" />
+              </label>
+              <label class="field">
+                Trier par :
+                <select id="viewers-sort">
+                  <option value="points">Points</option>
+                  <option value="presence">Temps de présence</option>
+                  <option value="messages">Messages</option>
+                  <option value="recent">Dernière apparition</option>
+                  <option value="name">Pseudo (A-Z)</option>
+                </select>
+              </label>
+              <button id="viewers-refresh" class="btn-small">Actualiser</button>
+            </div>
+            <p id="viewers-count" class="hint"></p>
+            <div class="table-wrap">
+              <table class="viewers-table">
+                <thead>
+                  <tr>
+                    <th>Viewer</th>
+                    <th id="viewers-points-head">Points</th>
+                    <th>Présence</th>
+                    <th>Messages</th>
+                    <th>Dernière vue</th>
+                    <th>Premier follow</th>
+                  </tr>
+                </thead>
+                <tbody id="viewers-body"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Commandes liées aux points</h2>
+            <p class="hint">
+              Les commandes de points (par exemple pour consulter ses points) seront ajoutées ici
+              plus tard.
+            </p>
           </div>
         </section>
       </div>

@@ -153,6 +153,7 @@ pub fn run() {
             bot::bot_auto_update,
             bot::bot_auto_delete,
             bot::bot_points_set_settings,
+            db::db_list_viewers,
             diagnostics::open_logs_folder
         ])
         .run(tauri::generate_context!())

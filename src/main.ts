@@ -4,7 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 
 type Role = "streamer" | "bot";
 type Level = "everyone" | "moderator" | "streamer";
-type Tab = "chat" | "commands" | "auto";
+type Tab = "chat" | "commands" | "auto" | "points";
 
 const ROLES: Role[] = ["streamer", "bot"];
 const ROLE_LABEL: Record<Role, string> = { streamer: "STREAMER", bot: "BOT" };
@@ -80,6 +80,31 @@ interface BotConfig {
   counter: number;
   auto: AutoSettings;
   auto_messages: AutoMessage[];
+  points: PointsSettings;
+}
+
+interface PointsSettings {
+  enabled: boolean;
+  name: string;
+  interval_min: number;
+  amount: number;
+  excluded: string[];
+}
+interface ViewerRow {
+  twitch_id: string;
+  login: string;
+  display_name: string;
+  first_seen: number;
+  last_seen: number;
+  first_follow: number | null;
+  last_follow: number | null;
+  messages: number;
+  minutes_present: number;
+  points: number;
+}
+interface ViewersPage {
+  rows: ViewerRow[];
+  total: number;
 }
 
 // Commandes qui agissent en silence : pas de texte de réponse.
@@ -165,6 +190,8 @@ function render() {
   $("#tab-chat").classList.toggle("active", currentTab === "chat");
   $("#tab-commands").classList.toggle("active", currentTab === "commands");
   $("#tab-auto").classList.toggle("active", currentTab === "auto");
+  $("#points-section").hidden = !(both && currentTab === "points");
+  $("#tab-points").classList.toggle("active", currentTab === "points");
 }
 
 function switchTab(tab: Tab) {
@@ -172,6 +199,7 @@ function switchTab(tab: Tab) {
   render();
   if (tab === "commands") loadCommands();
   if (tab === "auto") loadAuto();
+  if (tab === "points") loadPoints();
 }
 
 // --- Connexion / déconnexion ---
@@ -606,6 +634,88 @@ async function createAuto() {
   }
 }
 
+// --- Points ---
+let pointsName = "points";
+
+function formatDuration(minutes: number): string {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return h > 0 ? `${h} h ${String(m).padStart(2, "0")}` : `${m} min`;
+}
+
+function formatDate(seconds: number | null): string {
+  return seconds ? new Date(seconds * 1000).toLocaleDateString("fr-FR") : "—";
+}
+
+function collectPointsSettings(): PointsSettings {
+  return {
+    enabled: $<HTMLInputElement>("#points-enabled").checked,
+    name: $<HTMLInputElement>("#points-name").value,
+    interval_min: Number($<HTMLInputElement>("#points-interval").value) || 0,
+    amount: Number($<HTMLInputElement>("#points-amount").value) || 0,
+    excluded: $<HTMLTextAreaElement>("#points-excluded")
+      .value.split(/[\s,;]+/)
+      .filter((s) => s.length > 0),
+  };
+}
+
+async function savePointsSettings() {
+  const status = $("#points-status");
+  try {
+    const settings = collectPointsSettings();
+    await invoke("bot_points_set_settings", { settings });
+    pointsName = settings.name.trim();
+    status.textContent = "Réglages enregistrés";
+    await loadViewers();
+  } catch (e) {
+    status.textContent = `Erreur : ${e}`;
+  }
+}
+
+async function loadViewers() {
+  const search = $<HTMLInputElement>("#viewers-search").value.trim();
+  const sort = $<HTMLSelectElement>("#viewers-sort").value;
+  try {
+    const page = await invoke<ViewersPage>("db_list_viewers", { search, sort, limit: 200 });
+
+    $("#viewers-points-head").textContent = pointsName;
+    const body = $("#viewers-body");
+    body.replaceChildren();
+    for (const v of page.rows) {
+      const tr = document.createElement("tr");
+      const cells = [
+        v.display_name || v.login,
+        String(v.points),
+        formatDuration(v.minutes_present),
+        String(v.messages),
+        formatDate(v.last_seen),
+        formatDate(v.first_follow),
+      ];
+      for (const text of cells) {
+        const td = document.createElement("td");
+        td.textContent = text; // textContent : jamais de HTML venant d'un viewer
+        tr.appendChild(td);
+      }
+      body.appendChild(tr);
+    }
+    $("#viewers-count").textContent = `${page.rows.length} affiché(s) sur ${page.total}`;
+  } catch (e) {
+    $("#viewers-count").textContent = `Erreur : ${e}`;
+  }
+}
+
+async function loadPoints() {
+  const config = await invoke<BotConfig>("bot_get_state");
+  const p = config.points;
+  pointsName = p.name;
+  $<HTMLInputElement>("#points-enabled").checked = p.enabled;
+  $<HTMLInputElement>("#points-name").value = p.name;
+  $<HTMLInputElement>("#points-interval").value = String(p.interval_min);
+  $<HTMLInputElement>("#points-amount").value = String(p.amount);
+  $<HTMLTextAreaElement>("#points-excluded").value = p.excluded.join("\n");
+  await loadViewers();
+}
+
 // --- Démarrage ---
 window.addEventListener("DOMContentLoaded", async () => {
   // Boutons des cartes de connexion.
@@ -619,6 +729,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("#tab-chat").addEventListener("click", () => switchTab("chat"));
   $("#tab-commands").addEventListener("click", () => switchTab("commands"));
   $("#tab-auto").addEventListener("click", () => switchTab("auto"));
+  $("#tab-points").addEventListener("click", () => switchTab("points"));
 
   // Envoi de messages.
   $("#send-btn").addEventListener("click", sendMessage);
@@ -642,6 +753,13 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("#auto-save-settings").addEventListener("click", saveAutoSettings);
   $<HTMLInputElement>("#auto-enabled").addEventListener("change", saveAutoSettings);
   $("#auto-new-add").addEventListener("click", createAuto);
+
+  // Points.
+  $("#points-save").addEventListener("click", savePointsSettings);
+  $<HTMLInputElement>("#points-enabled").addEventListener("change", savePointsSettings);
+  $("#viewers-refresh").addEventListener("click", loadViewers);
+  $("#viewers-search").addEventListener("input", loadViewers);
+  $("#viewers-sort").addEventListener("change", loadViewers);
 
   $("#open-logs").addEventListener("click", async () => {
     try {

@@ -299,3 +299,20 @@ ul.accounts {
   resize: vertical;
   margin-bottom: 8px;
 }
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+.viewers-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.95em;
+}
+
+.viewers-table th,
+.viewers-table td {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.3);
+}

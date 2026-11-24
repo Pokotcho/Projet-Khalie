@@ -6,8 +6,10 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use rusqlite::Connection;
-use tauri::{AppHandle, Manager};
+use serde::Serialize;
+use tauri::{AppHandle, Manager, State};
 
+use crate::twitch::Role;
 use crate::AppState;
 
 // Nombre de sauvegardes journalières conservées.
@@ -304,4 +306,92 @@ pub async fn flusher(app: AppHandle) {
             Err(e) => ::log::warn!("{e}"),
         }
     }
+}
+
+// --- Liste des viewers pour l'interface ---
+
+#[derive(Serialize)]
+pub struct ViewerRow {
+    twitch_id: String,
+    login: String,
+    display_name: String,
+    first_seen: i64,
+    last_seen: i64,
+    first_follow: Option<i64>,
+    last_follow: Option<i64>,
+    messages: i64,
+    minutes_present: i64,
+    points: i64,
+}
+
+#[derive(Serialize)]
+pub struct ViewersPage {
+    rows: Vec<ViewerRow>,
+    total: i64, // nombre total de viewers (hors streamer et bot)
+}
+
+#[tauri::command]
+pub fn db_list_viewers(
+    state: State<'_, AppState>,
+    search: String,
+    sort: String,
+    limit: u32,
+) -> Result<ViewersPage, String> {
+    // Le streamer et le bot ne sont pas des viewers.
+    let streamer_id = state.user_id_of(Role::Streamer).unwrap_or_default();
+    let bot_id = state.user_id_of(Role::Bot).unwrap_or_default();
+
+    // Le tri est choisi dans une liste fermée : jamais de texte venant de l'interface dans la requête.
+    let order = match sort.as_str() {
+        "messages" => "messages DESC",
+        "presence" => "minutes_present DESC",
+        "recent" => "last_seen DESC",
+        "name" => "login ASC",
+        _ => "points DESC",
+    };
+
+    let escaped = search
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    let pattern = format!("%{escaped}%");
+    let limit = limit.clamp(1, 500) as i64;
+
+    let sql = format!(
+        "SELECT twitch_id, login, display_name, first_seen, last_seen, first_follow,
+                last_follow, messages, minutes_present, points
+         FROM viewers
+         WHERE twitch_id NOT IN (?1, ?2)
+           AND (login LIKE ?3 ESCAPE '\\' OR display_name LIKE ?3 ESCAPE '\\')
+         ORDER BY {order}, login ASC
+         LIMIT ?4"
+    );
+
+    state.db.with(|conn| {
+        let total: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM viewers WHERE twitch_id NOT IN (?1, ?2)",
+            rusqlite::params![streamer_id, bot_id],
+            |r| r.get(0),
+        )?;
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt
+            .query_map(rusqlite::params![streamer_id, bot_id, pattern, limit], |r| {
+                Ok(ViewerRow {
+                    twitch_id: r.get(0)?,
+                    login: r.get(1)?,
+                    display_name: r.get(2)?,
+                    first_seen: r.get(3)?,
+                    last_seen: r.get(4)?,
+                    first_follow: r.get(5)?,
+                    last_follow: r.get(6)?,
+                    messages: r.get(7)?,
+                    minutes_present: r.get(8)?,
+                    points: r.get(9)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<ViewerRow>>>()?;
+
+        Ok(ViewersPage { rows, total })
+    })
 }
