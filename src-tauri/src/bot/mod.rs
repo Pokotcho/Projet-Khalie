@@ -1,6 +1,7 @@
 pub mod auto;
 pub mod engine;
 pub mod points;
+pub mod events;
 
 use std::collections::HashMap;
 use std::fs;
@@ -94,6 +95,8 @@ pub struct BotConfig {
     pub auto_messages: Vec<AutoMessage>,
     #[serde(default)]
     pub points: PointsSettings, // réglages des points de présence
+    #[serde(default)]
+    pub events: EventSettings, // messages déclenchés par des événements
 }
 
 // Réglages communs à tous les messages automatiques.
@@ -160,6 +163,28 @@ impl Default for PointsSettings {
             insufficient_message:
                 "[@pseudo] il te faut [cout] [points] pour cette commande (tu en as [solde])."
                     .into(),
+        }
+    }
+}
+
+// Réglages des messages déclenchés par des événements (nouveau follower…).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EventSettings {
+    pub follow_enabled: bool,    // message de bienvenue aux nouveaux followers
+    pub only_when_live: bool,    // seulement quand le stream est en direct
+    pub follow_message: String,  // [@pseudo] et [pseudo] = le nouveau follower
+    pub reply_as: Role,
+}
+
+impl Default for EventSettings {
+    fn default() -> Self {
+        Self {
+            follow_enabled: true,
+            only_when_live: false,
+            follow_message: "Merci pour le follow [@pseudo] ! Bienvenue dans la communauté 💜"
+                .into(),
+            reply_as: Role::Bot,
         }
     }
 }
@@ -345,7 +370,8 @@ impl Default for BotConfig {
             counter: 0,
             auto: AutoSettings::default(),
             auto_messages: Vec::new(),
-            points: PointsSettings::default(),            
+            points: PointsSettings::default(),   
+            events: EventSettings::default(),         
         }
     }
 }
@@ -966,6 +992,26 @@ pub fn bot_points_set_settings(app: AppHandle, settings: PointsSettings) -> Resu
             streak_bonus: settings.streak_bonus,
             stream_gap_min: settings.stream_gap_min,
             insufficient_message: insufficient,
+        };
+    }
+    persist(&app)
+}
+
+// --- Événements ---
+
+#[tauri::command]
+pub fn bot_events_set_settings(app: AppHandle, settings: EventSettings) -> Result<(), String> {
+    let text = settings.follow_message.trim().to_string();
+    if text.is_empty() || text.chars().count() > 500 {
+        return Err("Le message doit faire entre 1 et 500 caractères.".into());
+    }
+    {
+        let state = app.state::<AppState>();
+        state.bot.config.write().unwrap().events = EventSettings {
+            follow_enabled: settings.follow_enabled,
+            only_when_live: settings.only_when_live,
+            follow_message: text,
+            reply_as: settings.reply_as,
         };
     }
     persist(&app)

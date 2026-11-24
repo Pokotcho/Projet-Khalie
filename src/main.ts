@@ -4,7 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 
 type Role = "streamer" | "bot";
 type Level = "everyone" | "moderator" | "streamer";
-type Tab = "chat" | "commands" | "auto" | "points";
+type Tab = "chat" | "commands" | "auto" | "points" | "events";
 
 const ROLES: Role[] = ["streamer", "bot"];
 const ROLE_LABEL: Record<Role, string> = { streamer: "STREAMER", bot: "BOT" };
@@ -88,6 +88,14 @@ interface BotConfig {
   auto: AutoSettings;
   auto_messages: AutoMessage[];
   points: PointsSettings;
+  events: EventSettings;
+}
+
+interface EventSettings {
+  follow_enabled: boolean;
+  only_when_live: boolean;
+  follow_message: string;
+  reply_as: Role;
 }
 
 interface PointsSettings {
@@ -227,6 +235,8 @@ function render() {
   $("#tab-auto").classList.toggle("active", currentTab === "auto");
   $("#points-section").hidden = !(both && currentTab === "points");
   $("#tab-points").classList.toggle("active", currentTab === "points");
+  $("#events-section").hidden = !(both && currentTab === "events");
+  $("#tab-events").classList.toggle("active", currentTab === "events");
 }
 
 function switchTab(tab: Tab) {
@@ -235,6 +245,7 @@ function switchTab(tab: Tab) {
   if (tab === "commands") loadCommands();
   if (tab === "auto") loadAuto();
   if (tab === "points") loadPoints();
+  if (tab === "events") loadEvents();
 }
 
 // --- Connexion / déconnexion ---
@@ -834,6 +845,35 @@ async function loadPoints() {
   await loadPointsCommands();
 }
 
+// --- Événements ---
+function collectEventSettings(): EventSettings {
+  return {
+    follow_enabled: $<HTMLInputElement>("#events-follow-enabled").checked,
+    only_when_live: $<HTMLInputElement>("#events-only-live").checked,
+    follow_message: $<HTMLTextAreaElement>("#events-follow-message").value,
+    reply_as: $<HTMLSelectElement>("#events-reply-as").value as Role,
+  };
+}
+
+async function saveEventSettings() {
+  const status = $("#events-status");
+  try {
+    await invoke("bot_events_set_settings", { settings: collectEventSettings() });
+    status.textContent = "Enregistré";
+  } catch (e) {
+    status.textContent = `Erreur : ${e}`;
+  }
+}
+
+async function loadEvents() {
+  const config = await invoke<BotConfig>("bot_get_state");
+  const ev = config.events;
+  $<HTMLInputElement>("#events-follow-enabled").checked = ev.follow_enabled;
+  $<HTMLInputElement>("#events-only-live").checked = ev.only_when_live;
+  $<HTMLTextAreaElement>("#events-follow-message").value = ev.follow_message;
+  $<HTMLSelectElement>("#events-reply-as").value = ev.reply_as;
+}
+
 // --- Démarrage ---
 window.addEventListener("DOMContentLoaded", async () => {
   // Boutons des cartes de connexion.
@@ -848,6 +888,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("#tab-commands").addEventListener("click", () => switchTab("commands"));
   $("#tab-auto").addEventListener("click", () => switchTab("auto"));
   $("#tab-points").addEventListener("click", () => switchTab("points"));
+  $("#tab-events").addEventListener("click", () => switchTab("events"));
 
   // Envoi de messages.
   $("#send-btn").addEventListener("click", sendMessage);
@@ -879,6 +920,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("#viewers-search").addEventListener("input", loadViewers);
   $("#viewers-sort").addEventListener("change", loadViewers);
   $("#pcmd-add").addEventListener("click", createPaidCommand);
+  $("#events-save").addEventListener("click", saveEventSettings);
+  $<HTMLInputElement>("#events-follow-enabled").addEventListener("change", saveEventSettings);
 
   $("#open-logs").addEventListener("click", async () => {
     try {

@@ -136,6 +136,13 @@ async fn run_connection(
                         {
                             return format!("abonnement refusé : {e}");
                         }
+                        // Abonnement aux nouveaux followers (une erreur ici ne coupe pas le chat).
+                        if let Err(e) =
+                            subscribe_follow(client, session, &session_id, &broadcaster_id).await
+                        {
+                            ::log::warn!("Abonnement aux follows impossible : {e}");
+                            crate::bot::log(app, format!("Follows : abonnement impossible ({e})"));
+                        }
                         *connected = true;
                         let _ = app.emit("chat-status", format!("Chat connecté ({target})"));
                     }
@@ -182,6 +189,24 @@ async fn run_connection(
                             tauri::async_runtime::spawn(crate::bot::engine::handle(
                                 app.clone(),
                                 chat,
+                            ));
+                        } else if v["metadata"]["subscription_type"].as_str()
+                            == Some("channel.follow")
+                        {
+                            let ev = &v["payload"]["event"];
+                            let followed_at = ev["followed_at"]
+                                .as_str()
+                                .and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok())
+                                .map(|d| d.timestamp())
+                                .unwrap_or_else(|| chrono::Utc::now().timestamp());
+                            tauri::async_runtime::spawn(crate::bot::events::on_follow(
+                                app.clone(),
+                                crate::bot::events::FollowEvent {
+                                    user_id: ev["user_id"].as_str().unwrap_or("").into(),
+                                    login: ev["user_login"].as_str().unwrap_or("").into(),
+                                    name: ev["user_name"].as_str().unwrap_or("").into(),
+                                    followed_at,
+                                },
                             ));
                         }
                     }
@@ -302,4 +327,42 @@ pub fn send_chat_message(app: AppHandle, text: String, role: Role) -> Result<(),
             queued_at: Instant::now(),
         })
         .map_err(|_| "File d'envoi pleine, réessaie dans un instant.".to_string())
+}
+
+// Demande à Twitch de nous prévenir à chaque nouveau follower de la chaîne du streamer.
+async fn subscribe_follow(
+    client: &reqwest::Client,
+    session: &TwitchSession,
+    session_id: &str,
+    broadcaster_id: &str,
+) -> Result<(), String> {
+    let body = serde_json::json!({
+        "type": "channel.follow",
+        "version": "2",
+        "condition": {
+            "broadcaster_user_id": broadcaster_id,
+            "moderator_user_id": session.user_id
+        },
+        "transport": {
+            "method": "websocket",
+            "session_id": session_id
+        }
+    });
+
+    let resp = client
+        .post(SUBSCRIBE_URL)
+        .header("Authorization", format!("Bearer {}", session.access_token))
+        .header("Client-Id", CLIENT_ID)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Twitch injoignable : {e}"))?;
+
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        let status = resp.status();
+        let detail = resp.text().await.unwrap_or_default();
+        Err(format!("code {status} : {detail}"))
+    }
 }

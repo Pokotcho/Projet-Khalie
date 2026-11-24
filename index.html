@@ -72,6 +72,7 @@
           <button id="tab-commands" class="tab">Commandes</button>
           <button id="tab-auto" class="tab">Messages auto</button>
           <button id="tab-points" class="tab">Points</button>
+          <button id="tab-events" class="tab">Événements</button>
         </nav>
 
         <!-- Onglet Chat -->
@@ -203,7 +204,7 @@
           </div>
         </section>
         <!-- Onglet Points -->
-                <section id="points-section" hidden>
+        <section id="points-section" hidden>
           <div class="card">
             <h2>Points de chaîne</h2>
             <label class="switch-row">
@@ -353,6 +354,42 @@
               placeholder="Réponse du bot, par exemple : [@pseudo] voici ta récompense !"
             ></textarea>
             <button id="pcmd-add">Ajouter la commande</button>
+          </div>
+        </section>
+        <!-- Onglet Événements -->
+        <section id="events-section" hidden>
+          <div class="card">
+            <h2>Nouveau follower</h2>
+            <label class="switch-row">
+              <input type="checkbox" id="events-follow-enabled" />
+              <strong>Message de bienvenue actif</strong>
+            </label>
+            <div class="field-row">
+              <label class="field">
+                <input type="checkbox" id="events-only-live" />
+                Seulement quand le stream est en direct
+              </label>
+              <label class="field">
+                Compte qui écrit :
+                <select id="events-reply-as">
+                  <option value="bot">Bot</option>
+                  <option value="streamer">Streamer</option>
+                </select>
+              </label>
+            </div>
+            <textarea
+              id="events-follow-message"
+              rows="2"
+              maxlength="500"
+              class="auto-textarea"
+            ></textarea>
+            <p class="hint">
+              Champs : <code>[@pseudo]</code> (mentionne le nouveau follower) et
+              <code>[pseudo]</code> (son nom sans @). Un message par nouveau follower, au moins
+              5 secondes entre deux messages. Les refollows ne reçoivent aucun message.
+            </p>
+            <button id="events-save">Enregistrer</button>
+            <p id="events-status" class="hint"></p>
           </div>
         </section>
       </div>

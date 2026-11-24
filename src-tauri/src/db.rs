@@ -305,6 +305,33 @@ impl Db {
         }
         self.current_stream.store(0, Ordering::Relaxed);
     }
+
+    // Enregistre un follow reçu en direct. Renvoie true s'il s'agit d'un NOUVEAU follower
+    // (aucune date de follow connue pour lui), false pour un refollow.
+    pub fn follow_seen(
+        &self,
+        id: &str,
+        login: &str,
+        name: &str,
+        followed_at: i64,
+    ) -> Result<bool, String> {
+        self.with(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            ensure_viewer(&tx, id, login, name)?;
+            let known: bool = tx.query_row(
+                "SELECT first_follow IS NOT NULL FROM viewers WHERE twitch_id = ?1",
+                [id],
+                |r| r.get(0),
+            )?;
+            tx.execute(
+                "UPDATE viewers SET last_follow = ?2, first_follow = COALESCE(first_follow, ?2)
+                 WHERE twitch_id = ?1",
+                rusqlite::params![id, followed_at],
+            )?;
+            tx.commit()?;
+            Ok(!known)
+        })
+    }
 }
 
 fn db_path(app: &AppHandle) -> Result<PathBuf, String> {
