@@ -89,6 +89,9 @@ interface PointsSettings {
   interval_min: number;
   amount: number;
   excluded: string[];
+  streak_every: number;
+  streak_bonus: number;
+  stream_gap_min: number;
 }
 interface ViewerRow {
   twitch_id: string;
@@ -101,6 +104,9 @@ interface ViewerRow {
   messages: number;
   minutes_present: number;
   points: number;
+  streak: number;
+  best_streak: number;
+  streams_attended: number;
 }
 interface ViewersPage {
   rows: ViewerRow[];
@@ -653,6 +659,9 @@ function collectPointsSettings(): PointsSettings {
     name: $<HTMLInputElement>("#points-name").value,
     interval_min: Number($<HTMLInputElement>("#points-interval").value) || 0,
     amount: Number($<HTMLInputElement>("#points-amount").value) || 0,
+    streak_every: Number($<HTMLInputElement>("#points-streak-every").value) || 0,
+    streak_bonus: Number($<HTMLInputElement>("#points-streak-bonus").value) || 0,
+    stream_gap_min: Number($<HTMLInputElement>("#points-stream-gap").value) || 0,
     excluded: $<HTMLTextAreaElement>("#points-excluded")
       .value.split(/[\s,;]+/)
       .filter((s) => s.length > 0),
@@ -688,6 +697,9 @@ async function loadViewers() {
         String(v.points),
         formatDuration(v.minutes_present),
         String(v.messages),
+        String(v.streak),
+        String(v.best_streak),
+        String(v.streams_attended),
         formatDate(v.last_seen),
         formatDate(v.first_follow),
       ];
@@ -712,6 +724,9 @@ async function loadPoints() {
   $<HTMLInputElement>("#points-name").value = p.name;
   $<HTMLInputElement>("#points-interval").value = String(p.interval_min);
   $<HTMLInputElement>("#points-amount").value = String(p.amount);
+  $<HTMLInputElement>("#points-streak-every").value = String(p.streak_every);
+  $<HTMLInputElement>("#points-streak-bonus").value = String(p.streak_bonus);
+  $<HTMLInputElement>("#points-stream-gap").value = String(p.stream_gap_min);
   $<HTMLTextAreaElement>("#points-excluded").value = p.excluded.join("\n");
   await loadViewers();
 }

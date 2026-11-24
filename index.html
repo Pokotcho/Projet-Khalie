@@ -203,13 +203,14 @@
           </div>
         </section>
         <!-- Onglet Points -->
-        <section id="points-section" hidden>
+                <section id="points-section" hidden>
           <div class="card">
             <h2>Points de chaîne</h2>
             <label class="switch-row">
               <input type="checkbox" id="points-enabled" />
               <strong>Points de présence actifs</strong> (distribués seulement pendant le direct)
             </label>
+
             <div class="field-row">
               <label class="field">
                 Nom des points :
@@ -224,6 +225,26 @@
                 <input type="number" id="points-amount" min="1" max="10000" />
               </label>
             </div>
+
+            <div class="field-row">
+              <label class="field">
+                Bonus de série tous les (streams d'affilée) :
+                <input type="number" id="points-streak-every" min="0" max="1000" />
+              </label>
+              <label class="field">
+                Points du bonus :
+                <input type="number" id="points-streak-bonus" min="0" max="100000" />
+              </label>
+              <label class="field">
+                Deux directs écartés de moins de (minutes) = un seul stream :
+                <input type="number" id="points-stream-gap" min="1" max="1440" />
+              </label>
+            </div>
+            <p class="hint">
+              Un viewer compte comme présent à un stream dès qu'il apparaît dans la liste des
+              présents ou qu'il écrit un message. 0 dans le premier champ désactive le bonus.
+            </p>
+
             <label class="field">
               Comptes exclus (un pseudo par ligne) :
               <textarea id="points-excluded" rows="4" class="auto-textarea"></textarea>
@@ -244,6 +265,8 @@
                 Trier par :
                 <select id="viewers-sort">
                   <option value="points">Points</option>
+                  <option value="streak">Série en cours</option>
+                  <option value="streams">Streams suivis</option>
                   <option value="presence">Temps de présence</option>
                   <option value="messages">Messages</option>
                   <option value="recent">Dernière apparition</option>
@@ -261,6 +284,9 @@
                     <th id="viewers-points-head">Points</th>
                     <th>Présence</th>
                     <th>Messages</th>
+                    <th>Série</th>
+                    <th>Meilleure série</th>
+                    <th>Streams suivis</th>
                     <th>Dernière vue</th>
                     <th>Premier follow</th>
                   </tr>

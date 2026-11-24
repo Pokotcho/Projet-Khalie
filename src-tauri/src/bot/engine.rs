@@ -207,10 +207,25 @@ pub async fn handle(app: AppHandle, msg: ChatMessage) {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    // Mémorise le viewer dans la base de données.
+        // Mémorise le viewer dans la base de données. Son message compte comme une présence
+    // au stream en cours, sauf pour le streamer et les comptes exclus (bots).
     {
         let state = app.state::<AppState>();
-        state.db.record_message(&msg.user_id, &msg.login, who(&msg));
+        let excluded = state
+            .bot
+            .config
+            .read()
+            .unwrap()
+            .points
+            .excluded
+            .iter()
+            .any(|x| *x == msg.login.to_lowercase());
+        state.db.record_message(
+            &msg.user_id,
+            &msg.login,
+            who(&msg),
+            !excluded && !msg.from_streamer,
+        );
     }
 
     let Some(rest) = msg.text.trim().strip_prefix('!') else {

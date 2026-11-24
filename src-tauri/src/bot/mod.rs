@@ -129,6 +129,9 @@ pub struct PointsSettings {
     pub interval_min: u32,    // minutes entre deux distributions
     pub amount: u32,          // points donnés à chaque distribution
     pub excluded: Vec<String>, // pseudos (minuscules) qui ne gagnent rien
+    pub streak_every: u32,     // bonus tous les X streams d'affilée (0 = désactivé)
+    pub streak_bonus: u32,     // points donnés à chaque palier
+    pub stream_gap_min: u32,   // deux directs séparés de moins de X minutes = un seul stream
 }
 
 impl Default for PointsSettings {
@@ -142,6 +145,9 @@ impl Default for PointsSettings {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
+            streak_every: 5,
+            streak_bonus: 100,
+            stream_gap_min: 120,
         }
     }
 }
@@ -854,6 +860,15 @@ pub fn bot_points_set_settings(app: AppHandle, settings: PointsSettings) -> Resu
     if !(1..=10_000).contains(&settings.amount) {
         return Err("Le montant doit être compris entre 1 et 10 000 points.".into());
     }
+    if settings.streak_every > 1000 {
+        return Err("Le palier de série doit être compris entre 0 et 1000 (0 = désactivé).".into());
+    }
+    if settings.streak_bonus > 100_000 {
+        return Err("Le bonus de série ne peut pas dépasser 100 000 points.".into());
+    }
+    if !(1..=1440).contains(&settings.stream_gap_min) {
+        return Err("L'écart entre deux directs doit être compris entre 1 et 1440 minutes.".into());
+    }
     let mut excluded: Vec<String> = settings
         .excluded
         .iter()
@@ -873,6 +888,9 @@ pub fn bot_points_set_settings(app: AppHandle, settings: PointsSettings) -> Resu
             interval_min: settings.interval_min,
             amount: settings.amount,
             excluded,
+            streak_every: settings.streak_every,
+            streak_bonus: settings.streak_bonus,
+            stream_gap_min: settings.stream_gap_min,
         };
     }
     persist(&app)

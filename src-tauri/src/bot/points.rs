@@ -7,7 +7,8 @@ use super::log;
 use crate::twitch::{api, Role};
 use crate::AppState;
 
-// Toutes les N minutes, pendant le direct, donne des points aux viewers présents dans le chat.
+// Suit les streams, et toutes les N minutes pendant le direct, donne des points
+// aux viewers présents dans le chat.
 pub async fn presence_loop(app: AppHandle) {
     let client = reqwest::Client::new();
     let mut last_tick = Instant::now();
@@ -23,9 +24,26 @@ pub async fn presence_loop(app: AppHandle) {
             (s, l)
         };
 
-        // Au début du direct, le minuteur repart de zéro.
+        // Début de direct : le minuteur repart de zéro et on ouvre (ou reprend) un stream.
         if live && !was_live {
             last_tick = Instant::now();
+            let gap = settings.stream_gap_min as i64 * 60;
+            let result = {
+                let state = app.state::<AppState>();
+                state.db.stream_start(gap)
+            };
+            match result {
+                Ok(id) => log(&app, format!("Stream n°{id} : suivi des séries démarré")),
+                Err(e) => log(&app, format!("Suivi des streams impossible : {e}")),
+            }
+        }
+        // Fin de direct.
+        if !live && was_live {
+            {
+                let state = app.state::<AppState>();
+                state.db.stream_end();
+            }
+            log(&app, "Fin du stream : suivi des séries arrêté");
         }
         was_live = live;
 
@@ -65,17 +83,24 @@ pub async fn presence_loop(app: AppHandle) {
 
         let result = {
             let state = app.state::<AppState>();
+            let _ = state.db.stream_touch();
             state.db.award_presence(
                 &eligible,
                 settings.amount as i64,
                 settings.interval_min as i64,
+                state.db.current_stream_id(),
+                settings.streak_every as i64,
+                settings.streak_bonus as i64,
             )
         };
         match result {
-            Ok(n) => log(
-                &app,
-                format!("Points : {n} viewer(s) ont reçu {} {}", settings.amount, settings.name),
-            ),
+            Ok((n, rewards)) => {
+                log(
+                    &app,
+                    format!("Points : {n} viewer(s) ont reçu {} {}", settings.amount, settings.name),
+                );
+                crate::db::announce(&app, rewards);
+            }
             Err(e) => log(&app, format!("Points : {e}")),
         }
     }
