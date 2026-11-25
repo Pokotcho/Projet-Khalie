@@ -260,3 +260,64 @@ pub async fn get_chatters(
     }
     Ok(all)
 }
+
+// Un follower tel que Twitch le décrit.
+pub struct FollowerRow {
+    pub id: String,
+    pub login: String,
+    pub name: String,
+    pub followed_at: i64,
+}
+
+pub struct FollowersPage {
+    pub rows: Vec<FollowerRow>,
+    pub cursor: Option<String>, // à redonner pour obtenir la page suivante
+    pub total: i64,
+}
+
+// Une page de 100 followers (les plus récents d'abord).
+pub async fn followers_page(
+    client: &reqwest::Client,
+    s: &TwitchSession,
+    after: Option<&str>,
+) -> Result<FollowersPage, String> {
+    let mut url = format!(
+        "{API}/channels/followers?broadcaster_id={}&first=100",
+        s.user_id
+    );
+    if let Some(c) = after {
+        url.push_str(&format!("&after={}", urlencoding::encode(c)));
+    }
+    let resp = authed(client.get(url), s).send().await.map_err(net)?;
+    if !resp.status().is_success() {
+        return Err(describe_error(resp).await);
+    }
+    let v: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("réponse illisible : {e}"))?;
+
+    let rows: Vec<FollowerRow> = v["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|u| {
+            let id = u["user_id"].as_str()?;
+            let ts = chrono::DateTime::parse_from_rfc3339(u["followed_at"].as_str()?)
+                .ok()?
+                .timestamp();
+            Some(FollowerRow {
+                id: id.to_string(),
+                login: u["user_login"].as_str().unwrap_or("").to_string(),
+                name: u["user_name"].as_str().unwrap_or("").to_string(),
+                followed_at: ts,
+            })
+        })
+        .collect();
+
+    Ok(FollowersPage {
+        rows,
+        cursor: v["pagination"]["cursor"].as_str().map(|c| c.to_string()),
+        total: v["total"].as_i64().unwrap_or(0),
+    })
+}

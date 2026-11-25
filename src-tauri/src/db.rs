@@ -332,6 +332,48 @@ impl Db {
             Ok(!known)
         })
     }
+    
+    // Petites informations de fonctionnement (ex. : « l'import des followers est fait »).
+    pub fn meta_get(&self, key: &str) -> Result<Option<String>, String> {
+        self.with(|conn| {
+            conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
+                .optional()
+        })
+    }
+
+    pub fn meta_set(&self, key: &str, value: &str) -> Result<(), String> {
+        self.with(|conn| {
+            conn.execute(
+                "INSERT INTO meta (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                rusqlite::params![key, value],
+            )
+            .map(|_| ())
+        })
+    }
+
+    // Import des followers. NE MODIFIE JAMAIS une donnée existante : une fiche inconnue est
+    // créée, et pour une fiche existante, seules les dates de follow VIDES sont remplies.
+    pub fn import_followers(&self, rows: &[crate::twitch::api::FollowerRow]) -> Result<(), String> {
+        self.with(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            {
+                let mut stmt = tx.prepare(
+                    "INSERT INTO viewers
+                         (twitch_id, login, display_name, first_seen, last_seen,
+                          first_follow, last_follow)
+                     VALUES (?1, ?2, ?3, ?4, ?4, ?4, ?4)
+                     ON CONFLICT(twitch_id) DO UPDATE SET
+                         first_follow = COALESCE(viewers.first_follow, excluded.first_follow),
+                         last_follow  = COALESCE(viewers.last_follow, excluded.last_follow)",
+                )?;
+                for r in rows {
+                    stmt.execute(rusqlite::params![r.id, r.login, r.name, r.followed_at])?;
+                }
+            }
+            tx.commit()
+        })
+    }
 }
 
 fn db_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -398,6 +440,17 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
              ALTER TABLE viewers ADD COLUMN streams_attended INTEGER NOT NULL DEFAULT 0;
              ALTER TABLE viewers ADD COLUMN last_stream_id INTEGER;
              PRAGMA user_version = 2;
+             COMMIT;",
+        )?;
+    }
+    if version < 3 {
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE meta (
+                 key   TEXT PRIMARY KEY,
+                 value TEXT NOT NULL
+             );
+             PRAGMA user_version = 3;
              COMMIT;",
         )?;
     }

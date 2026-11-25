@@ -923,6 +923,19 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("#events-save").addEventListener("click", saveEventSettings);
   $<HTMLInputElement>("#events-follow-enabled").addEventListener("change", saveEventSettings);
 
+  $("#followers-resync").addEventListener("click", async () => {
+    const status = $("#followers-status");
+    status.textContent =
+      "Import en cours… (la progression s'affiche dans le journal du bot, onglet Commandes)";
+    try {
+      const n = await invoke<number>("followers_resync");
+      status.textContent = `${n} follower(s) lus. Les données déjà enregistrées n'ont pas été modifiées.`;
+      await loadViewers();
+    } catch (e) {
+      status.textContent = `Erreur : ${e}`;
+    }
+  });
+
   $("#open-logs").addEventListener("click", async () => {
     try {
       await invoke("open_logs_folder");

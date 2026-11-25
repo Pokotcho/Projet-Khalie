@@ -2,6 +2,7 @@ pub mod auto;
 pub mod engine;
 pub mod points;
 pub mod events;
+pub mod followers;
 
 use std::collections::HashMap;
 use std::fs;
