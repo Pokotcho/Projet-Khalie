@@ -72,6 +72,7 @@
           <button id="tab-commands" class="tab">Commandes</button>
           <button id="tab-auto" class="tab">Messages auto</button>
           <button id="tab-points" class="tab">Points</button>
+          <button id="tab-database" class="tab">Base de données</button>
           <button id="tab-events" class="tab">Événements</button>
         </nav>
 
@@ -103,8 +104,8 @@
             <p class="hint">
               Champs utilisables dans les réponses : <code>[@pseudo]</code> mentionne le viewer qui
               a tapé la commande, <code>[pseudo]</code> écrit son nom sans @,
-              <code>[compteur]</code> la valeur du compteur, <code>[commandes]</code> la liste des
-              commandes accessibles à tous (!commandes), <code>[lien]</code> le lien du clip
+              <code>[compteur]</code> la valeur du compteur, <code>[commandes]</code> la liste des commandes accessibles à tous (!commandes et !commandesPoints), 
+              <code>[lien]</code> le lien du clip
               (!clip).
             </p>
             <p class="counter-row">
@@ -266,6 +267,58 @@
           </div>
 
           <div class="card">
+            <h2>Commandes liées aux points</h2>
+            <p class="hint">
+              Champs utilisables dans les réponses : <code>[@pseudo]</code> (celui qui tape la
+              commande), <code>[cible]</code> (la personne visée par @pseudo, sinon celui qui tape
+              la commande), <code>[solde]</code>, <code>[points]</code> (le nom des points),
+              <code>[montant]</code> (!give et !take), <code>[serie]</code>,
+              <code>[meilleure_serie]</code>, <code>[streams]</code>, <code>[premier]</code> et
+              <code>[dernier]</code> (!follow).
+            </p>
+            <p class="hint">
+              Une commande avec un coût est rangée ici. Le streamer ne paie jamais, les
+              modérateurs paient comme les autres. Les commandes silencieuses (!titre, !categorie,
+              !so) ne peuvent pas avoir de coût.
+            </p>
+            <p id="points-commands-status" class="hint"></p>
+          </div>
+
+          <div id="points-commands-list"></div>
+
+          <div class="card">
+            <h2>Ajouter une commande payante</h2>
+            <div class="field-row">
+              <label class="field">
+                Nom : !
+                <input id="pcmd-name" placeholder="exemple" maxlength="25" />
+              </label>
+              <label class="field">
+                Coût (points) :
+                <input type="number" id="pcmd-cost" min="1" max="1000000" />
+              </label>
+              <label class="field">
+                Accessible à :
+                <select id="pcmd-level">
+                  <option value="everyone">Tout le monde</option>
+                  <option value="moderator">Modérateurs</option>
+                  <option value="streamer">Streamer seulement</option>
+                </select>
+              </label>
+            </div>
+            <textarea
+              id="pcmd-response"
+              class="auto-textarea"
+              rows="2"
+              maxlength="500"
+              placeholder="Réponse du bot, par exemple : [@pseudo] voici ta récompense !"
+            ></textarea>
+            <button id="pcmd-add">Ajouter la commande</button>
+          </div>
+        </section>
+
+        <section id="database-section" hidden>
+          <div class="card">
             <h2>Viewers</h2>
             <div class="field-row">
               <label class="field">
@@ -308,56 +361,8 @@
               </table>
             </div>
           </div>
-
-                    <div class="card">
-            <h2>Commandes liées aux points</h2>
-            <p class="hint">
-              Champs utilisables dans les réponses : <code>[@pseudo]</code> (celui qui tape la
-              commande), <code>[cible]</code> (la personne visée par @pseudo, sinon celui qui tape
-              la commande), <code>[solde]</code>, <code>[points]</code> (le nom des points),
-              <code>[montant]</code> (!give et !take), <code>[serie]</code>,
-              <code>[meilleure_serie]</code>, <code>[streams]</code>, <code>[premier]</code> et
-              <code>[dernier]</code> (!follow).
-            </p>
-            <p class="hint">
-              Une commande avec un coût est rangée ici. Le streamer ne paie jamais, les
-              modérateurs paient comme les autres. Les commandes silencieuses (!titre, !categorie,
-              !so) ne peuvent pas avoir de coût.
-            </p>
-            <p id="points-commands-status" class="hint"></p>
-          </div>
-
-          <div id="points-commands-list"></div>
-
-          <div class="card">
-            <h2>Ajouter une commande payante</h2>
-            <div class="field-row">
-              <label class="field">
-                Nom : !
-                <input id="pcmd-name" placeholder="exemple" maxlength="25" />
-              </label>
-              <label class="field">
-                Coût (points) :
-                <input type="number" id="pcmd-cost" min="1" max="1000000" />
-              </label>
-              <label class="field">
-                Accessible à :
-                <select id="pcmd-level">
-                  <option value="everyone">Tout le monde</option>
-                  <option value="moderator">Modérateurs</option>
-                  <option value="streamer">Streamer seulement</option>
-                </select>
-              </label>
-            </div>
-            <textarea
-              id="pcmd-response"
-              rows="2"
-              maxlength="500"
-              placeholder="Réponse du bot, par exemple : [@pseudo] voici ta récompense !"
-            ></textarea>
-            <button id="pcmd-add">Ajouter la commande</button>
-          </div>
         </section>
+
         <!-- Onglet Événements -->
         <section id="events-section" hidden>
           <div class="card">

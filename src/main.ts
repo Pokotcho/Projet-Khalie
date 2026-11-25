@@ -4,7 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 
 type Role = "streamer" | "bot";
 type Level = "everyone" | "moderator" | "streamer";
-type Tab = "chat" | "commands" | "auto" | "points" | "events";
+type Tab = "chat" | "commands" | "auto" | "points" | "database" | "events";
 
 const ROLES: Role[] = ["streamer", "bot"];
 const ROLE_LABEL: Record<Role, string> = { streamer: "STREAMER", bot: "BOT" };
@@ -65,7 +65,8 @@ interface BotCommand {
     | "take"
     | "streak"
     | "best_streak"
-    | "points";
+    | "points"
+    | "points_list";
 }
 interface AutoSettings {
   enabled: boolean;
@@ -165,6 +166,7 @@ const KIND_HINT: Partial<Record<BotCommand["kind"], string>> = {
   streak: "Affiche la série en cours (ou celle d'un autre : !streak @pseudo).",
   best_streak: "Affiche la meilleure série (ou celle d'un autre : !beststreak @pseudo).",
   points: "Affiche le solde de points (ou celui d'un autre : !points @pseudo).",
+  points_list: "Liste des commandes liées aux points accessibles à tous.",
 };
 
 // --- État de l'interface ---
@@ -237,6 +239,8 @@ function render() {
   $("#tab-points").classList.toggle("active", currentTab === "points");
   $("#events-section").hidden = !(both && currentTab === "events");
   $("#tab-events").classList.toggle("active", currentTab === "events");
+  $("#database-section").hidden = !(both && currentTab === "database");
+  $("#tab-database").classList.toggle("active", currentTab === "database");
 }
 
 function switchTab(tab: Tab) {
@@ -246,6 +250,7 @@ function switchTab(tab: Tab) {
   if (tab === "auto") loadAuto();
   if (tab === "points") loadPoints();
   if (tab === "events") loadEvents();
+  if (tab === "database") loadDatabase();
 }
 
 // --- Connexion / déconnexion ---
@@ -340,7 +345,7 @@ function labelled(text: string, control: HTMLElement): HTMLLabelElement {
   return label;
 }
 
-function buildCommandRow(cmd: BotCommand, statusSelector = "#commands-status"): HTMLElement {
+function buildCommandRow(cmd: BotCommand, statusSelector = "#commands-status", withCost = false,): HTMLElement {
   const status = $(statusSelector);
   let currentName = cmd.name;
   let savedCost = cmd.cost;
@@ -441,7 +446,7 @@ function buildCommandRow(cmd: BotCommand, statusSelector = "#commands-status"): 
     options.append(labelled("Compte qui répond", replyAs));
   }
   options.append(labelled("Délai global (s)", globalCd), labelled("Délai par viewer (s)", userCd));
-  if (!silent) {
+  if (!silent && withCost) {
     options.append(labelled("Coût (points)", cost));
   }
 
@@ -458,7 +463,7 @@ function buildCommandRow(cmd: BotCommand, statusSelector = "#commands-status"): 
       reply_as: replyAs.value as Role,
       global_cooldown: Number(globalCd.value) || 0,
       user_cooldown: Number(userCd.value) || 0,
-      cost: silent ? 0 : Number(cost.value) || 0,
+      cost: silent || !withCost ? cmd.cost : Number(cost.value) || 0,
     };
     try {
       const finalName = await invoke<string>("bot_update_command", {
@@ -506,7 +511,7 @@ async function loadPointsCommands() {
   const list = $("#points-commands-list");
   list.replaceChildren();
   for (const cmd of config.commands.filter(isPointsCommand)) {
-    list.appendChild(buildCommandRow(cmd, "#points-commands-status"));
+    list.appendChild(buildCommandRow(cmd, "#points-commands-status", true));
   }
 }
 
@@ -787,7 +792,6 @@ async function savePointsSettings() {
     await invoke("bot_points_set_settings", { settings });
     pointsName = settings.name.trim();
     status.textContent = "Réglages enregistrés";
-    await loadViewers();
   } catch (e) {
     status.textContent = `Erreur : ${e}`;
   }
@@ -828,6 +832,12 @@ async function loadViewers() {
   }
 }
 
+async function loadDatabase() {
+  const config = await invoke<BotConfig>("bot_get_state");
+  pointsName = config.points.name;
+  await loadViewers();
+}
+
 async function loadPoints() {
   const config = await invoke<BotConfig>("bot_get_state");
   const p = config.points;
@@ -841,7 +851,6 @@ async function loadPoints() {
   $<HTMLInputElement>("#points-stream-gap").value = String(p.stream_gap_min);
   $<HTMLTextAreaElement>("#points-insufficient").value = p.insufficient_message;
   $<HTMLTextAreaElement>("#points-excluded").value = p.excluded.join("\n");
-  await loadViewers();
   await loadPointsCommands();
 }
 
@@ -889,6 +898,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("#tab-auto").addEventListener("click", () => switchTab("auto"));
   $("#tab-points").addEventListener("click", () => switchTab("points"));
   $("#tab-events").addEventListener("click", () => switchTab("events"));
+  $("#tab-database").addEventListener("click", () => switchTab("database"));
 
   // Envoi de messages.
   $("#send-btn").addEventListener("click", sendMessage);

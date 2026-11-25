@@ -47,6 +47,7 @@ pub enum Kind {
     Streak,       // !streak : série en cours
     BestStreak,   // !beststreak : meilleure série
     Points,       // !points : solde de points
+    PointsList,   // !commandesPoints : liste des commandes liées aux points
 }
 
 // Certaines commandes ne peuvent pas être ouvertes à tout le monde.
@@ -188,6 +189,21 @@ impl Default for EventSettings {
             reply_as: Role::Bot,
         }
     }
+}
+
+// Une commande est « liée aux points » si c'est l'une des commandes de points ou si elle a un coût.
+fn is_points_command(c: &Command) -> bool {
+    c.cost > 0
+        || matches!(
+            c.kind,
+            Kind::Follow
+                | Kind::Give
+                | Kind::Take
+                | Kind::Streak
+                | Kind::BestStreak
+                | Kind::Points
+                | Kind::PointsList
+        )
 }
 
 fn builtin(
@@ -358,6 +374,14 @@ impl BotConfig {
                 "[cible] a [solde] [points].",
                 5,
                 15,
+            ),
+            builtin(
+                "commandespoints",
+                Kind::PointsList,
+                Level::Everyone,
+                "[@pseudo] Commandes liées aux points : [commandes]",
+                10,
+                30,
             ),
         ]
     }

@@ -297,20 +297,35 @@ pub async fn handle(app: AppHandle, msg: ChatMessage) {
     let args = rest[first.len()..].trim().to_string();
 
     // On copie ce dont on a besoin, sans garder de verrou pendant l'envoi.
-    let (enabled, command, public_list, counter, insufficient, points_name) = {
+    let (enabled, command, public_list, points_list, counter, insufficient, points_name) = {
         let state = app.state::<AppState>();
         let config = state.bot.config.read().unwrap();
         let command = config.commands.iter().find(|c| c.name == name).cloned();
+        let visible = |c: &&super::Command| {
+            c.enabled
+                && c.level == Level::Everyone
+                && c.kind != Kind::List
+                && c.kind != Kind::PointsList
+        };
         let list: Vec<String> = config
             .commands
             .iter()
-            .filter(|c| c.enabled && c.level == Level::Everyone)
+            .filter(visible)
+            .filter(|c| !super::is_points_command(c))
+            .map(|c| format!("!{}", c.name))
+            .collect();
+        let plist: Vec<String> = config
+            .commands
+            .iter()
+            .filter(visible)
+            .filter(|c| super::is_points_command(c))
             .map(|c| format!("!{}", c.name))
             .collect();
         (
             config.enabled,
             command,
             list,
+            plist,
             config.counter,
             config.points.insufficient_message.clone(),
             config.points.name.clone(),
@@ -416,6 +431,14 @@ pub async fn handle(app: AppHandle, msg: ChatMessage) {
             &msg,
             &[
                 ("[commandes]", public_list.join(", ")),
+                ("[compteur]", counter.to_string()),
+            ],
+        )),
+        Kind::PointsList => Some(fill(
+            &command.response,
+            &msg,
+            &[
+                ("[commandes]", points_list.join(", ")),
                 ("[compteur]", counter.to_string()),
             ],
         )),
