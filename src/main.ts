@@ -2,6 +2,15 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
+import connexionHtml from "./views/connexion.html?raw";
+import onglets from "./views/onglets.html?raw";
+import chat from "./views/chat.html?raw";
+import commandes from "./views/commandes.html?raw";
+import messagesAuto from "./views/messages-auto.html?raw";
+import points from "./views/points.html?raw";
+import baseDeDonnees from "./views/base-de-donnees.html?raw";
+import evenements from "./views/evenements.html?raw";
+
 type Role = "streamer" | "bot";
 type Level = "everyone" | "moderator" | "streamer";
 type Tab = "chat" | "commands" | "auto" | "points" | "database" | "events";
@@ -885,6 +894,19 @@ async function loadEvents() {
 
 // --- Démarrage ---
 window.addEventListener("DOMContentLoaded", async () => {
+
+  // Insère les vues (src/views/) dans la page. Doit passer AVANT les écouteurs ci-dessous.
+  $("#views").innerHTML = [
+    connexionHtml,
+    onglets,
+    chat,
+    commandes,
+    messagesAuto,
+    points,
+    baseDeDonnees,
+    evenements,
+  ].join("\n");
+
   // Boutons des cartes de connexion.
   for (const role of ROLES) {
     const card = $(`#card-${role}`);

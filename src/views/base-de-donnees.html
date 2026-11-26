@@ -1,0 +1,45 @@
+<section id="database-section" hidden>
+  <div class="card">
+    <h2>Viewers</h2>
+    <div class="field-row">
+      <label class="field">
+        Rechercher :
+        <input id="viewers-search" placeholder="pseudo" />
+      </label>
+      <label class="field">
+        Trier par :
+        <select id="viewers-sort">
+          <option value="points">Points</option>
+          <option value="streak">Série en cours</option>
+          <option value="streams">Streams suivis</option>
+          <option value="presence">Temps de présence</option>
+          <option value="messages">Messages</option>
+          <option value="recent">Dernière apparition</option>
+          <option value="name">Pseudo (A-Z)</option>
+        </select>
+      </label>
+      <button id="viewers-refresh" class="btn-small">Actualiser</button>
+      <button id="followers-resync" class="btn-small">Importer les followers</button>
+    </div>
+    <p id="viewers-count" class="hint"></p>
+    <p id="followers-status" class="hint"></p>
+    <div class="table-wrap">
+      <table class="viewers-table">
+        <thead>
+          <tr>
+            <th>Viewer</th>
+            <th id="viewers-points-head">Points</th>
+            <th>Présence</th>
+            <th>Messages</th>
+            <th>Série</th>
+            <th>Meilleure série</th>
+            <th>Streams suivis</th>
+            <th>Dernière vue</th>
+            <th>Premier follow</th>
+          </tr>
+        </thead>
+        <tbody id="viewers-body"></tbody>
+      </table>
+    </div>
+  </div>
+</section>

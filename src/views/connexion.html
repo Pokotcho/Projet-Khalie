@@ -1,0 +1,49 @@
+<section class="card" id="summary" hidden>
+  <h2>Comptes connectés</h2>
+  <ul id="summary-list" class="accounts"></ul>
+</section>
+
+<!-- Étape 1 : le streamer -->
+<section class="card" id="card-streamer" data-role="streamer" hidden>
+  <h2>1. Connecter le compte du streamer</h2>
+  <p class="hint">
+    Ce compte lit le chat et servira aux actions réservées au propriétaire de la chaîne.
+  </p>
+  <button class="btn-login">Connecter le streamer</button>
+
+  <div class="pending" hidden>
+    <p>
+      En attente de l'autorisation…
+      <button class="btn-cancel secondary">Annuler</button>
+    </p>
+    <p class="pending-help">
+      Ton navigateur s'est ouvert : connecte-toi avec le <strong>compte du streamer</strong>
+      et clique sur « Autoriser ».
+    </p>
+    <p>Si rien ne s'ouvre : <code class="auth-url"></code></p>
+    <p>Code, si Twitch le demande : <strong class="user-code"></strong></p>
+  </div>
+  <p class="error" hidden></p>
+</section>
+
+<!-- Étape 2 : le bot -->
+<section class="card" id="card-bot" data-role="bot" hidden>
+  <h2>2. Connecter le compte du bot</h2>
+  <p class="hint">Ce compte écrit dans le chat et sera piloté depuis l'application.</p>
+  <button class="btn-login">Connecter le bot</button>
+
+  <div class="pending" hidden>
+    <p>
+      En attente de l'autorisation…
+      <button class="btn-cancel secondary">Annuler</button>
+    </p>
+    <p class="pending-help">
+      Copie ce lien dans une <strong>fenêtre de navigation privée</strong>, connecte-toi
+      avec le <strong>compte du bot</strong> (pas celui du streamer), puis clique sur
+      « Autoriser ».
+    </p>
+    <p><code class="auth-url"></code></p>
+    <p>Code, si Twitch le demande : <strong class="user-code"></strong></p>
+  </div>
+  <p class="error" hidden></p>
+</section>

@@ -1,0 +1,58 @@
+<section id="commands-section" hidden>
+  <div class="card">
+    <h2>Commandes du bot</h2>
+    <label class="switch-row">
+      <input type="checkbox" id="bot-enabled" />
+      <strong>Bot actif</strong> (décoché : le bot ne répond plus à aucune commande)
+    </label>
+    <p class="hint">
+      Champs utilisables dans les réponses : <code>[@pseudo]</code> mentionne le viewer qui
+      a tapé la commande, <code>[pseudo]</code> écrit son nom sans @,
+      <code>[compteur]</code> la valeur du compteur, <code>[commandes]</code> la liste des commandes accessibles à tous (!commandes et !commandesPoints), 
+      <code>[lien]</code> le lien du clip
+      (!clip).
+    </p>
+    <p class="counter-row">
+      Compteur : <strong id="counter-value">0</strong>
+      <button id="counter-minus" class="btn-small">−1</button>
+      <button id="counter-plus" class="btn-small">+1</button>
+      <button id="counter-reset" class="btn-small">Remettre à zéro</button>
+    </p>
+    <p id="commands-status" class="hint"></p>
+  </div>
+
+  <div id="commands-list"></div>
+
+  <div class="card">
+    <h2>Ajouter une commande simple</h2>
+    <div class="field-row">
+      <label class="field"
+        >Nom : !
+        <input id="new-name" placeholder="exemple" maxlength="25" />
+      </label>
+      <label class="field"
+        >Accessible à :
+        <select id="new-level">
+          <option value="everyone">Tout le monde</option>
+          <option value="moderator">Modérateurs</option>
+          <option value="streamer">Streamer seulement</option>
+        </select>
+      </label>
+    </div>
+    <textarea
+      id="new-response"
+      rows="2"
+      maxlength="500"
+      placeholder="Réponse du bot, par exemple : [@pseudo] voici la réponse !"
+    ></textarea>
+    <button id="new-add">Ajouter la commande</button>
+  </div>
+
+  <div class="card">
+    <h2>Journal du bot</h2>
+    <div id="bot-log" class="chat-log small"></div>
+    <p>
+      <button id="open-logs" class="btn-small">Ouvrir le dossier des journaux</button>
+    </p>
+  </div>
+</section>

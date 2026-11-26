@@ -1,0 +1,111 @@
+<section id="points-section" hidden>
+  <div class="card">
+    <h2>Points de chaîne</h2>
+    <label class="switch-row">
+      <input type="checkbox" id="points-enabled" />
+      <strong>Points de présence actifs</strong> (distribués seulement pendant le direct)
+    </label>
+
+    <div class="field-row">
+      <label class="field">
+        Nom des points :
+        <input id="points-name" maxlength="30" />
+      </label>
+      <label class="field">
+        Toutes les (minutes) :
+        <input type="number" id="points-interval" min="1" max="60" />
+      </label>
+      <label class="field">
+        Points donnés à chaque fois :
+        <input type="number" id="points-amount" min="1" max="10000" />
+      </label>
+    </div>
+
+    <div class="field-row">
+      <label class="field">
+        Bonus de série tous les (streams d'affilée) :
+        <input type="number" id="points-streak-every" min="0" max="1000" />
+      </label>
+      <label class="field">
+        Points du bonus :
+        <input type="number" id="points-streak-bonus" min="0" max="100000" />
+      </label>
+      <label class="field">
+        Deux directs écartés de moins de (minutes) = un seul stream :
+        <input type="number" id="points-stream-gap" min="1" max="1440" />
+      </label>
+    </div>
+    <p class="hint">
+      Un viewer compte comme présent à un stream dès qu'il apparaît dans la liste des
+      présents ou qu'il écrit un message. 0 dans le premier champ désactive le bonus.
+    </p>
+
+    <label class="field">
+      Comptes exclus (un pseudo par ligne) :
+      <textarea id="points-excluded" rows="4" class="auto-textarea"></textarea>
+    </label>
+    <p class="hint">Le streamer et le bot ne gagnent jamais de points.</p>
+
+    <label class="field">
+      Message quand le solde est insuffisant :
+      <textarea id="points-insufficient" rows="2" maxlength="500" class="auto-textarea"></textarea>
+    </label>
+    <p class="hint">
+      Champs : <code>[@pseudo]</code>, <code>[cout]</code>, <code>[solde]</code>,
+      <code>[points]</code> (le nom des points).
+    </p>
+
+    <button id="points-save">Enregistrer les réglages</button>
+    <p id="points-status" class="hint"></p>
+  </div>
+
+  <div class="card">
+    <h2>Commandes liées aux points</h2>
+    <p class="hint">
+      Champs utilisables dans les réponses : <code>[@pseudo]</code> (celui qui tape la
+      commande), <code>[cible]</code> (la personne visée par @pseudo, sinon celui qui tape
+      la commande), <code>[solde]</code>, <code>[points]</code> (le nom des points),
+      <code>[montant]</code> (!give et !take), <code>[serie]</code>,
+      <code>[meilleure_serie]</code>, <code>[streams]</code>, <code>[premier]</code> et
+      <code>[dernier]</code> (!follow).
+    </p>
+    <p class="hint">
+      Une commande avec un coût est rangée ici. Le streamer ne paie jamais, les
+      modérateurs paient comme les autres. Les commandes silencieuses (!titre, !categorie,
+      !so) ne peuvent pas avoir de coût.
+    </p>
+    <p id="points-commands-status" class="hint"></p>
+  </div>
+
+  <div id="points-commands-list"></div>
+
+  <div class="card">
+    <h2>Ajouter une commande payante</h2>
+    <div class="field-row">
+      <label class="field">
+        Nom : !
+        <input id="pcmd-name" placeholder="exemple" maxlength="25" />
+      </label>
+      <label class="field">
+        Coût (points) :
+        <input type="number" id="pcmd-cost" min="1" max="1000000" />
+      </label>
+      <label class="field">
+        Accessible à :
+        <select id="pcmd-level">
+          <option value="everyone">Tout le monde</option>
+          <option value="moderator">Modérateurs</option>
+          <option value="streamer">Streamer seulement</option>
+        </select>
+      </label>
+    </div>
+    <textarea
+      id="pcmd-response"
+      class="auto-textarea"
+      rows="2"
+      maxlength="500"
+      placeholder="Réponse du bot, par exemple : [@pseudo] voici ta récompense !"
+    ></textarea>
+    <button id="pcmd-add">Ajouter la commande</button>
+  </div>
+</section>
