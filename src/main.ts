@@ -99,6 +99,7 @@ interface BotConfig {
   auto_messages: AutoMessage[];
   points: PointsSettings;
   events: EventSettings;
+  throne: ThroneSettings;
 }
 
 interface EventSettings {
@@ -106,6 +107,16 @@ interface EventSettings {
   only_when_live: boolean;
   follow_message: string;
   reply_as: Role;
+}
+
+interface ThroneSettings {
+  enabled: boolean;
+  relay_url: string;
+  reply_as: Role;
+  anonymous_name: string;
+  gift_message: string;
+  contribution_message: string;
+  crowdfunded_message: string;
 }
 
 interface PointsSettings {
@@ -258,7 +269,12 @@ function switchTab(tab: Tab) {
   if (tab === "commands") loadCommands();
   if (tab === "auto") loadAuto();
   if (tab === "points") loadPoints();
-  if (tab === "events") loadEvents();
+
+  if (tab === "events") {
+    loadEvents();
+    loadThrone();
+  }
+
   if (tab === "database") loadDatabase();
 }
 
@@ -892,6 +908,80 @@ async function loadEvents() {
   $<HTMLSelectElement>("#events-reply-as").value = ev.reply_as;
 }
 
+// --- Dons Throne ---
+function collectThroneSettings(): ThroneSettings {
+  return {
+    enabled: $<HTMLInputElement>("#throne-enabled").checked,
+    relay_url: $<HTMLInputElement>("#throne-url").value,
+    reply_as: $<HTMLSelectElement>("#throne-reply-as").value as Role,
+    anonymous_name: $<HTMLInputElement>("#throne-anon").value,
+    gift_message: $<HTMLTextAreaElement>("#throne-gift").value,
+    contribution_message: $<HTMLTextAreaElement>("#throne-contribution").value,
+    crowdfunded_message: $<HTMLTextAreaElement>("#throne-crowdfunded").value,
+  };
+}
+
+async function refreshThroneToken() {
+  const has = await invoke<boolean>("throne_has_token");
+  $("#throne-token-state").textContent = has ? "Token enregistré" : "Aucun token enregistré";
+}
+
+// Enregistre les réglages, et le token s'il vient d'être saisi. Renvoie false en cas d'erreur.
+async function saveThroneSettings(): Promise<boolean> {
+  const status = $("#throne-status");
+  try {
+    await invoke("bot_throne_set_settings", { settings: collectThroneSettings() });
+    const tokenInput = $<HTMLInputElement>("#throne-token");
+    const token = tokenInput.value.trim();
+    if (token) {
+      await invoke("throne_set_token", { token });
+      tokenInput.value = "";
+    }
+    await refreshThroneToken();
+    status.textContent = "Enregistré";
+    return true;
+  } catch (e) {
+    status.textContent = `Erreur : ${e}`;
+    return false;
+  }
+}
+
+async function testThroneConnection() {
+  if (!(await saveThroneSettings())) return;
+  const status = $("#throne-status");
+  status.textContent = "Test en cours…";
+  try {
+    status.textContent = await invoke<string>("throne_test_connection");
+  } catch (e) {
+    status.textContent = `Erreur : ${e}`;
+  }
+}
+
+async function testThroneMessage() {
+  if (!(await saveThroneSettings())) return;
+  const status = $("#throne-status");
+  const kind = $<HTMLSelectElement>("#throne-test-kind").value;
+  try {
+    await invoke("throne_test_message", { kind });
+    status.textContent = "Message de test envoyé dans le chat";
+  } catch (e) {
+    status.textContent = `Erreur : ${e}`;
+  }
+}
+
+async function loadThrone() {
+  const config = await invoke<BotConfig>("bot_get_state");
+  const t = config.throne;
+  $<HTMLInputElement>("#throne-enabled").checked = t.enabled;
+  $<HTMLInputElement>("#throne-url").value = t.relay_url;
+  $<HTMLSelectElement>("#throne-reply-as").value = t.reply_as;
+  $<HTMLInputElement>("#throne-anon").value = t.anonymous_name;
+  $<HTMLTextAreaElement>("#throne-gift").value = t.gift_message;
+  $<HTMLTextAreaElement>("#throne-contribution").value = t.contribution_message;
+  $<HTMLTextAreaElement>("#throne-crowdfunded").value = t.crowdfunded_message;
+  await refreshThroneToken();
+}
+
 // --- Démarrage ---
 window.addEventListener("DOMContentLoaded", async () => {
 
@@ -954,6 +1044,10 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("#pcmd-add").addEventListener("click", createPaidCommand);
   $("#events-save").addEventListener("click", saveEventSettings);
   $<HTMLInputElement>("#events-follow-enabled").addEventListener("change", saveEventSettings);
+  $("#throne-save").addEventListener("click", saveThroneSettings);
+  $<HTMLInputElement>("#throne-enabled").addEventListener("change", saveThroneSettings);
+  $("#throne-test-conn").addEventListener("click", testThroneConnection);
+  $("#throne-test-msg").addEventListener("click", testThroneMessage);
 
   $("#followers-resync").addEventListener("click", async () => {
     const status = $("#followers-status");

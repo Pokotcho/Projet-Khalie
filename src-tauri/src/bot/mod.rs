@@ -3,6 +3,7 @@ pub mod engine;
 pub mod points;
 pub mod events;
 pub mod followers;
+pub mod throne;
 
 use std::collections::HashMap;
 use std::fs;
@@ -99,6 +100,8 @@ pub struct BotConfig {
     pub points: PointsSettings, // réglages des points de présence
     #[serde(default)]
     pub events: EventSettings, // messages déclenchés par des événements
+    #[serde(default)]
+    pub throne: ThroneSettings, // dons Throne
 }
 
 // Réglages communs à tous les messages automatiques.
@@ -187,6 +190,36 @@ impl Default for EventSettings {
             follow_message: "Merci pour le follow [@pseudo] ! Bienvenue dans la communauté 💜"
                 .into(),
             reply_as: Role::Bot,
+        }
+    }
+}
+
+// Réglages des remerciements pour les dons Throne.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThroneSettings {
+    pub enabled: bool,              // messages de remerciement dans le chat
+    pub relay_url: String,          // adresse du relais Cloudflare
+    pub reply_as: Role,
+    pub anonymous_name: String,     // nom affiché pour un donateur anonyme
+    pub gift_message: String,
+    pub contribution_message: String,
+    pub crowdfunded_message: String,
+}
+
+impl Default for ThroneSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            relay_url: String::new(),
+            reply_as: Role::Bot,
+            anonymous_name: "un mystérieux donateur".into(),
+            gift_message: "🎁 Merci [donateur] pour le cadeau « [objet] » ([montant]) ! 💜".into(),
+            contribution_message:
+                "💜 Merci [donateur] pour sa contribution de [montant] pour « [objet] » !".into(),
+            crowdfunded_message:
+                "🎉 « [objet] » est entièrement financé grâce à la communauté, merci à tous ! 💜"
+                    .into(),
         }
     }
 }
@@ -396,7 +429,8 @@ impl Default for BotConfig {
             auto: AutoSettings::default(),
             auto_messages: Vec::new(),
             points: PointsSettings::default(),   
-            events: EventSettings::default(),         
+            events: EventSettings::default(),  
+            throne: ThroneSettings::default(),       
         }
     }
 }
@@ -1037,6 +1071,50 @@ pub fn bot_events_set_settings(app: AppHandle, settings: EventSettings) -> Resul
             only_when_live: settings.only_when_live,
             follow_message: text,
             reply_as: settings.reply_as,
+        };
+    }
+    persist(&app)
+}
+
+#[tauri::command]
+pub fn bot_throne_set_settings(app: AppHandle, settings: ThroneSettings) -> Result<(), String> {
+    // Adresse : https obligatoire. Si l'adresse du webhook ou de /events est collée, on la coupe.
+    let mut url = settings.relay_url.trim().trim_end_matches('/').to_string();
+    for suffix in ["/throne", "/events"] {
+        if let Some(stripped) = url.strip_suffix(suffix) {
+            url = stripped.to_string();
+        }
+    }
+    if !url.is_empty() && (!url.starts_with("https://") || url.chars().count() > 200) {
+        return Err("L'adresse du relais doit commencer par https:// (200 caractères maximum).".into());
+    }
+
+    let anon = settings.anonymous_name.trim().to_string();
+    if anon.is_empty() || anon.chars().count() > 50 {
+        return Err("Le nom du donateur anonyme doit faire entre 1 et 50 caractères.".into());
+    }
+    let check = |text: &str, what: &str| -> Result<String, String> {
+        let t = text.trim().to_string();
+        if t.is_empty() || t.chars().count() > 500 {
+            Err(format!("Le message « {what} » doit faire entre 1 et 500 caractères."))
+        } else {
+            Ok(t)
+        }
+    };
+    let gift = check(&settings.gift_message, "cadeau offert")?;
+    let contribution = check(&settings.contribution_message, "contribution")?;
+    let crowdfunded = check(&settings.crowdfunded_message, "cagnotte")?;
+
+    {
+        let state = app.state::<AppState>();
+        state.bot.config.write().unwrap().throne = ThroneSettings {
+            enabled: settings.enabled,
+            relay_url: url,
+            reply_as: settings.reply_as,
+            anonymous_name: anon,
+            gift_message: gift,
+            contribution_message: contribution,
+            crowdfunded_message: crowdfunded,
         };
     }
     persist(&app)

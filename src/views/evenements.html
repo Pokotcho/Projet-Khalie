@@ -32,4 +32,65 @@
     <button id="events-save">Enregistrer</button>
     <p id="events-status" class="hint"></p>
   </div>
+
+  <div class="card">
+    <h2>Dons Throne</h2>
+    <label class="switch-row">
+      <input type="checkbox" id="throne-enabled" />
+      <strong>Messages de remerciement actifs</strong> (désactivé : les dons sont quand même
+      enregistrés, mais rien n'est écrit dans le chat)
+    </label>
+
+    <div class="field-row">
+      <label class="field">
+        Adresse du relais :
+        <input id="throne-url" placeholder="https://khalie-relay.xxx.workers.dev" size="42" maxlength="200" />
+      </label>
+    </div>
+    <div class="field-row">
+      <label class="field">
+        Token du relais :
+        <input type="password" id="throne-token" placeholder="coller le token ici" size="30" maxlength="200" autocomplete="off" />
+      </label>
+      <span id="throne-token-state" class="hint"></span>
+    </div>
+
+    <div class="field-row">
+      <label class="field">
+        Compte qui écrit :
+        <select id="throne-reply-as">
+          <option value="bot">Bot</option>
+          <option value="streamer">Streamer</option>
+        </select>
+      </label>
+      <label class="field">
+        Nom d'un donateur anonyme :
+        <input id="throne-anon" maxlength="50" />
+      </label>
+    </div>
+
+    <p class="hint"><strong>Cadeau offert</strong></p>
+    <textarea id="throne-gift" rows="2" maxlength="500" class="auto-textarea"></textarea>
+    <p class="hint"><strong>Contribution à un cadeau</strong></p>
+    <textarea id="throne-contribution" rows="2" maxlength="500" class="auto-textarea"></textarea>
+    <p class="hint"><strong>Cadeau entièrement financé (cagnotte)</strong></p>
+    <textarea id="throne-crowdfunded" rows="2" maxlength="500" class="auto-textarea"></textarea>
+    <p class="hint">
+      Champs : <code>[donateur]</code>, <code>[objet]</code>, <code>[montant]</code> (dans la
+      devise du paiement, par exemple « 25,50 EUR ») et <code>[message]</code> (le message du
+      donateur, s'il y en a un). Une cagnotte n'a pas de donateur.
+    </p>
+
+    <div class="field-row">
+      <button id="throne-save">Enregistrer</button>
+      <button id="throne-test-conn" class="btn-small">Tester la connexion au relais</button>
+      <select id="throne-test-kind">
+        <option value="gift_purchased">Cadeau offert</option>
+        <option value="contribution_purchased">Contribution (anonyme)</option>
+        <option value="gift_crowdfunded">Cagnotte</option>
+      </select>
+      <button id="throne-test-msg" class="btn-small">Envoyer un message de test dans le chat</button>
+    </div>
+    <p id="throne-status" class="hint"></p>
+  </div>
 </section>

@@ -1,0 +1,13 @@
+{
+	"name": "khalie-relay",
+	"main": "src/index.js",
+	"compatibility_date": "2026-11-01",
+	"account_id": "8a63b9a8b04cc07db3dcbdf50cd16c35",
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "khalie-relay",
+			"database_id": "ff604bab-4ef2-40e0-a73d-ab555843db6f"
+		},
+	]
+}

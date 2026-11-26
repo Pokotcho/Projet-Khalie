@@ -129,7 +129,8 @@ pub fn run() {
 
             tauri::async_runtime::spawn(db::flusher(app.handle().clone()));   
             tauri::async_runtime::spawn(bot::points::presence_loop(app.handle().clone())); 
-            tauri::async_runtime::spawn(bot::followers::auto_import(app.handle().clone()));        
+            tauri::async_runtime::spawn(bot::followers::auto_import(app.handle().clone())); 
+            tauri::async_runtime::spawn(bot::throne::poll_loop(app.handle().clone()));       
             tauri::async_runtime::spawn(twitch::auth::token_keeper(app.handle().clone()));
             tauri::async_runtime::spawn(outbox::worker(app.handle().clone(), outbox_rx));
             tauri::async_runtime::spawn(bot::auto::scheduler(app.handle().clone()));
@@ -156,6 +157,12 @@ pub fn run() {
             bot::bot_points_set_settings,
             bot::bot_events_set_settings,
             bot::followers::followers_resync,
+            bot::bot_throne_set_settings,
+            bot::throne::throne_has_token,
+            bot::throne::throne_set_token,
+            bot::throne::throne_clear_token,
+            bot::throne::throne_test_connection,
+            bot::throne::throne_test_message,
             db::db_list_viewers,
             diagnostics::open_logs_folder
         ])

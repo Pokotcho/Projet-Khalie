@@ -24,6 +24,19 @@ struct Pending {
     stream: i64, // stream auquel ce viewer a assisté via un message (0 = aucun)
 }
 
+// Un don Throne (montant en centimes).
+pub struct Donation {
+    pub event_id: String,
+    pub received_at: i64,
+    pub kind: String, // gift_purchased, contribution_purchased ou gift_crowdfunded
+    pub donor: Option<String>,
+    pub item: Option<String>,
+    pub amount: Option<i64>,
+    pub currency: Option<String>,
+    pub message: Option<String>,
+    pub surprise: bool,
+}
+
 // Un bonus de série à journaliser.
 pub struct StreakReward {
     pub display_name: String,
@@ -352,6 +365,29 @@ impl Db {
         })
     }
 
+    // Enregistre un don. Renvoie false s'il était déjà enregistré (même event_id).
+    pub fn record_donation(&self, d: &Donation) -> Result<bool, String> {
+        self.with(|conn| {
+            let n = conn.execute(
+                "INSERT OR IGNORE INTO donations
+                     (event_id, received_at, kind, donor, item, amount, currency, message, surprise)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                rusqlite::params![
+                    d.event_id,
+                    d.received_at,
+                    d.kind,
+                    d.donor,
+                    d.item,
+                    d.amount,
+                    d.currency,
+                    d.message,
+                    d.surprise as i64
+                ],
+            )?;
+            Ok(n > 0)
+        })
+    }
+
     // Import des followers. NE MODIFIE JAMAIS une donnée existante : une fiche inconnue est
     // créée, et pour une fiche existante, seules les dates de follow VIDES sont remplies.
     pub fn import_followers(&self, rows: &[crate::twitch::api::FollowerRow]) -> Result<(), String> {
@@ -451,6 +487,25 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
                  value TEXT NOT NULL
              );
              PRAGMA user_version = 3;
+             COMMIT;",
+        )?;
+    }
+    if version < 4 {
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE donations (
+                 event_id    TEXT PRIMARY KEY,
+                 received_at INTEGER NOT NULL,
+                 kind        TEXT NOT NULL,
+                 donor       TEXT,
+                 item        TEXT,
+                 amount      INTEGER,
+                 currency    TEXT,
+                 message     TEXT,
+                 surprise    INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE INDEX idx_donations_received ON donations(received_at);
+             PRAGMA user_version = 4;
              COMMIT;",
         )?;
     }

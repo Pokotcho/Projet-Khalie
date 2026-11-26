@@ -28,3 +28,24 @@ pub fn clear(role: Role) {
         let _ = e.delete_credential();
     }
 }
+
+// Secrets divers (ex. : token du relais Throne), un par nom.
+fn secret_entry(name: &str) -> Result<Entry, String> {
+    Entry::new(SERVICE, name).map_err(|e| format!("Trousseau indisponible : {e}"))
+}
+
+pub fn save_secret(name: &str, value: &str) -> Result<(), String> {
+    secret_entry(name)?
+        .set_password(value)
+        .map_err(|e| format!("Écriture dans le trousseau impossible : {e}"))
+}
+
+pub fn load_secret(name: &str) -> Option<String> {
+    secret_entry(name).ok()?.get_password().ok()
+}
+
+pub fn clear_secret(name: &str) {
+    if let Ok(e) = secret_entry(name) {
+        let _ = e.delete_credential();
+    }
+}
