@@ -4,6 +4,7 @@ pub mod points;
 pub mod events;
 pub mod followers;
 pub mod throne;
+pub mod bets;
 
 use std::collections::HashMap;
 use std::fs;
@@ -49,12 +50,18 @@ pub enum Kind {
     BestStreak,   // !beststreak : meilleure série
     Points,       // !points : solde de points
     PointsList,   // !commandesPoints : liste des commandes liées aux points
+    Bet,          // !bet Objet ; A ; B : ouvre un bet (modérateurs)
+    BetEnd,       // !betfin : termine les votes
+    BetWin,       // !betgagnant A : désigne la réponse gagnante
+    BetCancel,    // !betannuler : annule et rembourse
+    Vote,         // !vote A 100 : mise sur une réponse
+    BetInfo,      // !mise : état du bet et mise du viewer
 }
 
 // Certaines commandes ne peuvent pas être ouvertes à tout le monde.
 fn level_allowed(kind: Kind, level: Level) -> bool {
     match kind {
-        Kind::CounterReset | Kind::Title | Kind::Category | Kind::Shoutout | Kind::Give | Kind::Take => {
+        Kind::CounterReset | Kind::Title | Kind::Category | Kind::Shoutout | Kind::Give | Kind::Take | Kind::Bet | Kind::BetEnd | Kind::BetWin | Kind::BetCancel => {
             level != Level::Everyone
         }
         _ => true,
@@ -63,7 +70,18 @@ fn level_allowed(kind: Kind, level: Level) -> bool {
 
 // Ces commandes agissent en silence : pas de texte de réponse à renseigner.
 fn needs_response(kind: Kind) -> bool {
-    !matches!(kind, Kind::Title | Kind::Category | Kind::Shoutout)
+    !matches!(
+        kind,
+        Kind::Title
+            | Kind::Category
+            | Kind::Shoutout
+            | Kind::Bet
+            | Kind::BetEnd
+            | Kind::BetWin
+            | Kind::BetCancel
+            | Kind::Vote
+            | Kind::BetInfo
+    )
 }
 
 fn default_reply_as() -> Role {
@@ -102,6 +120,8 @@ pub struct BotConfig {
     pub events: EventSettings, // messages déclenchés par des événements
     #[serde(default)]
     pub throne: ThroneSettings, // dons Throne
+    #[serde(default)]
+    pub bets: BetSettings, // paris
 }
 
 // Réglages communs à tous les messages automatiques.
@@ -224,6 +244,59 @@ impl Default for ThroneSettings {
     }
 }
 
+// Réglages des bets.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BetSettings {
+    pub min_stake: u32,      // mise minimale par vote
+    pub mods_can_vote: bool, // les modérateurs peuvent-ils miser ?
+    pub reply_as: Role,
+    // Mise en forme des listes.
+    pub option_format: String,
+    pub cote_format: String,
+    pub list_separator: String,
+    // Messages.
+    pub announce_title: String,
+    pub announce_options: String,
+    pub announce_vote: String,
+    pub recap: String,
+    pub recap_empty: String,
+    pub winner_one: String,
+    pub winner_two: String,
+    pub winner_many: String,
+    pub winner_refunded: String,
+    pub winner_none: String,
+    pub cancelled: String,
+}
+
+impl Default for BetSettings {
+    fn default() -> Self {
+        Self {
+            min_stake: 10,
+            mods_can_vote: true,
+            reply_as: Role::Bot,
+            option_format: "[lettre] - [texte]".into(),
+            cote_format: "[lettre] [cote]".into(),
+            list_separator: " • ".into(),
+            announce_title: "Bet en cours ! [objet]".into(),
+            announce_options: "[reponses]".into(),
+            announce_vote: "Pour voter : ![commande_vote] A 100 (mise minimale : [mise_min] [points])"
+                .into(),
+            recap: "Votes terminés ! Cotes : [cotes]".into(),
+            recap_empty: "Votes terminés ! Personne n'a voté.".into(),
+            winner_one: "Félicitations ! [total] [points] vont à [gagnant] !".into(),
+            winner_two: "Félicitations ! [total] [points] vont à [gagnant] et à [second] !".into(),
+            winner_many: "Félicitations ! [total] [points] vont à [gagnant] et aux [autres] autres !"
+                .into(),
+            winner_refunded:
+                "Personne n'avait misé sur la bonne réponse : les [total] [points] sont rendus."
+                    .into(),
+            winner_none: "Bet terminé : personne n'avait voté, rien à distribuer.".into(),
+            cancelled: "Bet annulé : toutes les mises sont rendues ([total] [points]).".into(),
+        }
+    }
+}
+
 // Une commande est « liée aux points » si c'est l'une des commandes de points ou si elle a un coût.
 fn is_points_command(c: &Command) -> bool {
     c.cost > 0
@@ -236,6 +309,12 @@ fn is_points_command(c: &Command) -> bool {
                 | Kind::BestStreak
                 | Kind::Points
                 | Kind::PointsList
+                | Kind::Bet
+                | Kind::BetEnd
+                | Kind::BetWin
+                | Kind::BetCancel
+                | Kind::Vote
+                | Kind::BetInfo
         )
 }
 
@@ -416,6 +495,13 @@ impl BotConfig {
                 10,
                 30,
             ),
+
+            builtin("bet", Kind::Bet, Level::Moderator, "", 0, 0),
+            builtin("betfin", Kind::BetEnd, Level::Moderator, "", 0, 0),
+            builtin("betgagnant", Kind::BetWin, Level::Moderator, "", 0, 0),
+            builtin("betannuler", Kind::BetCancel, Level::Moderator, "", 0, 0),
+            builtin("vote", Kind::Vote, Level::Everyone, "", 0, 2),
+            builtin("mise", Kind::BetInfo, Level::Everyone, "", 2, 10),
         ]
     }
 }
@@ -430,7 +516,8 @@ impl Default for BotConfig {
             auto_messages: Vec::new(),
             points: PointsSettings::default(),   
             events: EventSettings::default(),  
-            throne: ThroneSettings::default(),       
+            throne: ThroneSettings::default(),  
+            bets: BetSettings::default(),     
         }
     }
 }
@@ -1118,4 +1205,61 @@ pub fn bot_throne_set_settings(app: AppHandle, settings: ThroneSettings) -> Resu
         };
     }
     persist(&app)
+}
+
+#[tauri::command]
+pub fn bot_bets_set_settings(app: AppHandle, settings: BetSettings) -> Result<(), String> {
+    if settings.min_stake < 1 || settings.min_stake > 1_000_000 {
+        return Err("La mise minimale doit être comprise entre 1 et 1 000 000.".into());
+    }
+
+    // Chaque message : entre 1 et 500 caractères (espaces de début et de fin retirés).
+    let text = |value: &str, what: &str| -> Result<String, String> {
+        let t = value.trim().to_string();
+        if t.is_empty() || t.chars().count() > 500 {
+            Err(format!("Le message « {what} » doit faire entre 1 et 500 caractères."))
+        } else {
+            Ok(t)
+        }
+    };
+    // Formats courts : les espaces comptent (ex. « [lettre] - [texte] »).
+    let short = |value: &str, what: &str| -> Result<String, String> {
+        if value.trim().is_empty() || value.chars().count() > 100 {
+            Err(format!("« {what} » doit faire entre 1 et 100 caractères."))
+        } else {
+            Ok(value.to_string())
+        }
+    };
+
+    let cleaned = BetSettings {
+        min_stake: settings.min_stake,
+        mods_can_vote: settings.mods_can_vote,
+        reply_as: settings.reply_as,
+        option_format: short(&settings.option_format, "Format d'une réponse")?,
+        cote_format: short(&settings.cote_format, "Format d'une cote")?,
+        list_separator: short(&settings.list_separator, "Séparateur")?,
+        announce_title: text(&settings.announce_title, "annonce : objet")?,
+        announce_options: text(&settings.announce_options, "annonce : réponses")?,
+        announce_vote: text(&settings.announce_vote, "annonce : comment voter")?,
+        recap: text(&settings.recap, "fin des votes")?,
+        recap_empty: text(&settings.recap_empty, "fin des votes sans vote")?,
+        winner_one: text(&settings.winner_one, "un gagnant")?,
+        winner_two: text(&settings.winner_two, "deux gagnants")?,
+        winner_many: text(&settings.winner_many, "plusieurs gagnants")?,
+        winner_refunded: text(&settings.winner_refunded, "aucun gagnant")?,
+        winner_none: text(&settings.winner_none, "bet sans vote")?,
+        cancelled: text(&settings.cancelled, "bet annulé")?,
+    };
+
+    {
+        let state = app.state::<AppState>();
+        state.bot.config.write().unwrap().bets = cleaned;
+    }
+    persist(&app)
+}
+
+// Réglages d'origine, pour le bouton « Remettre les messages par défaut » (rien n'est enregistré).
+#[tauri::command]
+pub fn bot_bets_default_settings() -> BetSettings {
+    BetSettings::default()
 }

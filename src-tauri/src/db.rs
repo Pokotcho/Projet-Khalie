@@ -509,6 +509,39 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
              COMMIT;",
         )?;
     }
+    if version < 5 {
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE bets (
+                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                 question    TEXT NOT NULL,
+                 status      TEXT NOT NULL,
+                 created_at  INTEGER NOT NULL,
+                 closed_at   INTEGER,
+                 resolved_at INTEGER,
+                 closes_at   INTEGER,
+                 winner      INTEGER
+             );
+             CREATE TABLE bet_options (
+                 bet_id INTEGER NOT NULL,
+                 idx    INTEGER NOT NULL,
+                 label  TEXT NOT NULL,
+                 PRIMARY KEY (bet_id, idx)
+             );
+             CREATE TABLE bet_votes (
+                 bet_id     INTEGER NOT NULL,
+                 twitch_id  TEXT NOT NULL,
+                 option_idx INTEGER NOT NULL,
+                 stake      INTEGER NOT NULL,
+                 first_at   INTEGER NOT NULL,
+                 payout     INTEGER NOT NULL DEFAULT 0,
+                 PRIMARY KEY (bet_id, twitch_id)
+             );
+             CREATE INDEX idx_bet_votes_bet ON bet_votes(bet_id);
+             PRAGMA user_version = 5;
+             COMMIT;",
+        )?;
+    }
     Ok(())
 }
 
@@ -937,6 +970,467 @@ impl Db {
             )?;
             tx.commit()?;
             Ok(dates)
+        })
+    }
+}
+
+
+// ===================== Bets (paris avec les points de chaîne) =====================
+
+// Un des meilleurs parieurs d'une réponse.
+#[derive(Serialize, Clone)]
+pub struct TopBettor {
+    pub name: String,
+    pub stake: i64,
+}
+
+// Une réponse du bet, avec ses chiffres du moment.
+#[derive(Serialize, Clone)]
+pub struct BetOptionSnap {
+    pub idx: i64,
+    pub letter: String,
+    pub label: String,
+    pub total: i64,         // points misés sur cette réponse
+    pub voters: i64,        // nombre de votants
+    pub percent: f64,       // part de la cagnotte (0 à 100)
+    pub odds: Option<f64>,  // cote = cagnotte / total (None tant que personne n'a voté dessus)
+    pub top: Vec<TopBettor>, // les 3 plus grosses mises
+}
+
+// État complet d'un bet : sert à l'interface et, plus tard, à l'overlay OBS.
+#[derive(Serialize, Clone)]
+pub struct BetSnapshot {
+    pub id: i64,
+    pub question: String,
+    pub status: String, // open, closed, resolved, cancelled
+    pub created_at: i64,
+    pub closes_at: Option<i64>, // réservé (fermeture automatique, compte à rebours)
+    pub pot: i64,
+    pub voters: i64,
+    pub winner: Option<i64>,
+    pub options: Vec<BetOptionSnap>,
+}
+
+pub enum VoteResult {
+    Placed { option: i64, added: i64, stake: i64 },
+    NotOpen,
+    UnknownOption,
+    OtherOption(i64), // le viewer a déjà misé sur une autre réponse
+    TooLow,
+    NoFunds(i64), // solde actuel
+}
+
+pub struct BetWinner {
+    pub name: String,
+    pub stake: i64,
+    pub payout: i64,
+}
+
+pub struct BetOutcome {
+    pub pot: i64,
+    pub refunded: bool, // personne n'avait misé sur la réponse gagnante : tout est rendu
+    pub winners: Vec<BetWinner>, // du plus gros parieur au plus petit
+}
+
+// 0 -> "A", 1 -> "B"…
+pub fn letter(idx: i64) -> String {
+    ((b'A' + idx.clamp(0, 25) as u8) as char).to_string()
+}
+
+// Partage la cagnotte entre les gagnants, proportionnellement à leur mise, en nombres entiers.
+// `stakes` : (mise, ordre d'arrivée). Le total distribué est EXACTEMENT la cagnotte : les points
+// restants après l'arrondi vers le bas vont à ceux dont la partie décimale perdue est la plus
+// grande (à égalité, à celui qui a misé le premier).
+pub fn split_pot(pot: i64, stakes: &[(i64, i64)]) -> Vec<i64> {
+    let total: u128 = stakes.iter().map(|s| s.0 as u128).sum();
+    if total == 0 {
+        return vec![0; stakes.len()];
+    }
+    let mut out: Vec<i64> = Vec::with_capacity(stakes.len());
+    let mut rest: Vec<u128> = Vec::with_capacity(stakes.len());
+    for (stake, _) in stakes {
+        let num = *stake as u128 * pot as u128;
+        out.push((num / total) as i64);
+        rest.push(num % total);
+    }
+    let mut left = pot - out.iter().sum::<i64>();
+    let mut order: Vec<usize> = (0..stakes.len()).collect();
+    order.sort_by(|&a, &b| {
+        rest[b]
+            .cmp(&rest[a])
+            .then(stakes[a].1.cmp(&stakes[b].1))
+            .then(a.cmp(&b))
+    });
+    for i in order {
+        if left <= 0 {
+            break;
+        }
+        out[i] += 1;
+        left -= 1;
+    }
+    out
+}
+
+impl Db {
+    // Crée un bet. Renvoie None s'il y en a déjà un en cours (ouvert ou fermé, pas terminé).
+    pub fn bet_create(&self, question: &str, options: &[String]) -> Result<Option<i64>, String> {
+        self.with(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let active: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM bets WHERE status IN ('open', 'closed')",
+                [],
+                |r| r.get(0),
+            )?;
+            if active > 0 {
+                return Ok(None);
+            }
+            let now = chrono::Utc::now().timestamp();
+            tx.execute(
+                "INSERT INTO bets (question, status, created_at) VALUES (?1, 'open', ?2)",
+                rusqlite::params![question, now],
+            )?;
+            let id = tx.last_insert_rowid();
+            for (i, label) in options.iter().enumerate() {
+                tx.execute(
+                    "INSERT INTO bet_options (bet_id, idx, label) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![id, i as i64, label],
+                )?;
+            }
+            tx.commit()?;
+            Ok(Some(id))
+        })
+    }
+
+    // Le bet en cours (ouvert ou fermé) : (identifiant, état).
+    pub fn bet_active(&self) -> Result<Option<(i64, String)>, String> {
+        self.with(|conn| {
+            conn.query_row(
+                "SELECT id, status FROM bets WHERE status IN ('open', 'closed')
+                 ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+        })
+    }
+
+    // Textes des réponses, dans l'ordre (A, B, C…).
+    pub fn bet_options(&self, bet_id: i64) -> Result<Vec<String>, String> {
+        self.with(|conn| {
+            let mut stmt =
+                conn.prepare("SELECT label FROM bet_options WHERE bet_id = ?1 ORDER BY idx")?;
+            let rows = stmt.query_map([bet_id], |r| r.get::<_, String>(0))?;
+            rows.collect()
+        })
+    }
+
+    // Mise d'un viewer sur ce bet : (réponse, total misé).
+    pub fn bet_vote_of(&self, bet_id: i64, id: &str) -> Result<Option<(i64, i64)>, String> {
+        self.with(|conn| {
+            conn.query_row(
+                "SELECT option_idx, stake FROM bet_votes WHERE bet_id = ?1 AND twitch_id = ?2",
+                rusqlite::params![bet_id, id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+        })
+    }
+
+    // Un vote. `amount` None = « tout ». Le débit des points et l'enregistrement de la mise se
+    // font dans la même transaction : jamais de points perdus.
+    pub fn bet_vote(
+        &self,
+        bet_id: i64,
+        id: &str,
+        option: i64,
+        amount: Option<i64>,
+        min_stake: i64,
+    ) -> Result<VoteResult, String> {
+        self.with(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let status: Option<String> = tx
+                .query_row("SELECT status FROM bets WHERE id = ?1", [bet_id], |r| r.get(0))
+                .optional()?;
+            if status.as_deref() != Some("open") {
+                return Ok(VoteResult::NotOpen);
+            }
+            let count: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM bet_options WHERE bet_id = ?1",
+                [bet_id],
+                |r| r.get(0),
+            )?;
+            if option < 0 || option >= count {
+                return Ok(VoteResult::UnknownOption);
+            }
+            let existing: Option<i64> = tx
+                .query_row(
+                    "SELECT option_idx FROM bet_votes WHERE bet_id = ?1 AND twitch_id = ?2",
+                    rusqlite::params![bet_id, id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(o) = existing {
+                if o != option {
+                    return Ok(VoteResult::OtherOption(o));
+                }
+            }
+            let balance: i64 = tx
+                .query_row("SELECT points FROM viewers WHERE twitch_id = ?1", [id], |r| {
+                    r.get(0)
+                })
+                .optional()?
+                .unwrap_or(0);
+            let amount = amount.unwrap_or(balance);
+            if amount < min_stake.max(1) {
+                return Ok(VoteResult::TooLow);
+            }
+            if amount > balance {
+                return Ok(VoteResult::NoFunds(balance));
+            }
+            let spent = tx.execute(
+                "UPDATE viewers SET points = points - ?2 WHERE twitch_id = ?1 AND points >= ?2",
+                rusqlite::params![id, amount],
+            )?;
+            if spent != 1 {
+                return Ok(VoteResult::NoFunds(balance));
+            }
+            let now = chrono::Utc::now().timestamp_millis();
+            tx.execute(
+                "INSERT INTO bet_votes (bet_id, twitch_id, option_idx, stake, first_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(bet_id, twitch_id) DO UPDATE SET stake = stake + excluded.stake",
+                rusqlite::params![bet_id, id, option, amount, now],
+            )?;
+            let stake: i64 = tx.query_row(
+                "SELECT stake FROM bet_votes WHERE bet_id = ?1 AND twitch_id = ?2",
+                rusqlite::params![bet_id, id],
+                |r| r.get(0),
+            )?;
+            tx.commit()?;
+            Ok(VoteResult::Placed {
+                option,
+                added: amount,
+                stake,
+            })
+        })
+    }
+
+    // Ferme les votes. Renvoie false si le bet n'était pas ouvert.
+    pub fn bet_close(&self, bet_id: i64) -> Result<bool, String> {
+        self.with(|conn| {
+            let now = chrono::Utc::now().timestamp();
+            let n = conn.execute(
+                "UPDATE bets SET status = 'closed', closed_at = ?2
+                 WHERE id = ?1 AND status = 'open'",
+                rusqlite::params![bet_id, now],
+            )?;
+            Ok(n == 1)
+        })
+    }
+
+    // Annule le bet et rend toutes les mises. Renvoie le total rendu (None si déjà terminé).
+    pub fn bet_cancel(&self, bet_id: i64) -> Result<Option<i64>, String> {
+        self.with(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let status: Option<String> = tx
+                .query_row("SELECT status FROM bets WHERE id = ?1", [bet_id], |r| r.get(0))
+                .optional()?;
+            if !matches!(status.as_deref(), Some("open") | Some("closed")) {
+                return Ok(None);
+            }
+            let mut total = 0i64;
+            {
+                let mut stmt = tx.prepare(
+                    "SELECT twitch_id, stake FROM bet_votes WHERE bet_id = ?1",
+                )?;
+                let votes: Vec<(String, i64)> = stmt
+                    .query_map([bet_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<Result<_, _>>()?;
+                for (id, stake) in votes {
+                    tx.execute(
+                        "UPDATE viewers SET points = points + ?2 WHERE twitch_id = ?1",
+                        rusqlite::params![id, stake],
+                    )?;
+                    tx.execute(
+                        "UPDATE bet_votes SET payout = ?3 WHERE bet_id = ?1 AND twitch_id = ?2",
+                        rusqlite::params![bet_id, id, stake],
+                    )?;
+                    total += stake;
+                }
+            }
+            let now = chrono::Utc::now().timestamp();
+            tx.execute(
+                "UPDATE bets SET status = 'cancelled', resolved_at = ?2 WHERE id = ?1",
+                rusqlite::params![bet_id, now],
+            )?;
+            tx.commit()?;
+            Ok(Some(total))
+        })
+    }
+
+    // Désigne la réponse gagnante et paie. None si le bet était déjà terminé ou annulé.
+    pub fn bet_resolve(&self, bet_id: i64, winner: i64) -> Result<Option<BetOutcome>, String> {
+        self.with(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let status: Option<String> = tx
+                .query_row("SELECT status FROM bets WHERE id = ?1", [bet_id], |r| r.get(0))
+                .optional()?;
+            if !matches!(status.as_deref(), Some("open") | Some("closed")) {
+                return Ok(None);
+            }
+
+            // (identifiant, nom, réponse, mise, ordre d'arrivée)
+            let votes: Vec<(String, String, i64, i64, i64)> = {
+                let mut stmt = tx.prepare(
+                    "SELECT bv.twitch_id,
+                            COALESCE(NULLIF(v.display_name, ''), v.login, bv.twitch_id),
+                            bv.option_idx, bv.stake, bv.first_at
+                     FROM bet_votes bv
+                     LEFT JOIN viewers v ON v.twitch_id = bv.twitch_id
+                     WHERE bv.bet_id = ?1
+                     ORDER BY bv.stake DESC, bv.first_at ASC",
+                )?;
+                stmt.query_map([bet_id], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+                })?
+                .collect::<Result<_, _>>()?
+            };
+            let pot: i64 = votes.iter().map(|v| v.3).sum();
+            let winning: Vec<&(String, String, i64, i64, i64)> =
+                votes.iter().filter(|v| v.2 == winner).collect();
+            let win_total: i64 = winning.iter().map(|v| v.3).sum();
+
+            let mut outcome = BetOutcome {
+                pot,
+                refunded: false,
+                winners: Vec::new(),
+            };
+            if win_total == 0 {
+                // Personne sur la bonne réponse : chacun récupère sa mise.
+                outcome.refunded = true;
+                for v in &votes {
+                    tx.execute(
+                        "UPDATE viewers SET points = points + ?2 WHERE twitch_id = ?1",
+                        rusqlite::params![v.0, v.3],
+                    )?;
+                    tx.execute(
+                        "UPDATE bet_votes SET payout = ?3 WHERE bet_id = ?1 AND twitch_id = ?2",
+                        rusqlite::params![bet_id, v.0, v.3],
+                    )?;
+                }
+            } else {
+                let stakes: Vec<(i64, i64)> = winning.iter().map(|v| (v.3, v.4)).collect();
+                let payouts = split_pot(pot, &stakes);
+                for (v, payout) in winning.iter().zip(payouts) {
+                    tx.execute(
+                        "UPDATE viewers SET points = points + ?2 WHERE twitch_id = ?1",
+                        rusqlite::params![v.0, payout],
+                    )?;
+                    tx.execute(
+                        "UPDATE bet_votes SET payout = ?3 WHERE bet_id = ?1 AND twitch_id = ?2",
+                        rusqlite::params![bet_id, v.0, payout],
+                    )?;
+                    outcome.winners.push(BetWinner {
+                        name: v.1.clone(),
+                        stake: v.3,
+                        payout,
+                    });
+                }
+            }
+            let now = chrono::Utc::now().timestamp();
+            tx.execute(
+                "UPDATE bets SET status = 'resolved', winner = ?2, resolved_at = ?3,
+                        closed_at = COALESCE(closed_at, ?3)
+                 WHERE id = ?1",
+                rusqlite::params![bet_id, winner, now],
+            )?;
+            tx.commit()?;
+            Ok(Some(outcome))
+        })
+    }
+
+    // État du dernier bet (en cours ou terminé), None s'il n'y en a jamais eu.
+    pub fn bet_snapshot(&self) -> Result<Option<BetSnapshot>, String> {
+        self.with(|conn| {
+            let bet = conn
+                .query_row(
+                    "SELECT id, question, status, created_at, closes_at, winner
+                     FROM bets ORDER BY id DESC LIMIT 1",
+                    [],
+                    |r| {
+                        Ok((
+                            r.get::<_, i64>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, i64>(3)?,
+                            r.get::<_, Option<i64>>(4)?,
+                            r.get::<_, Option<i64>>(5)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            let Some((id, question, status, created_at, closes_at, winner)) = bet else {
+                return Ok(None);
+            };
+
+            let labels: Vec<(i64, String)> = {
+                let mut stmt = conn
+                    .prepare("SELECT idx, label FROM bet_options WHERE bet_id = ?1 ORDER BY idx")?;
+                stmt.query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<Result<_, _>>()?
+            };
+            // (réponse, mise, nom), du plus gros au plus petit
+            let votes: Vec<(i64, i64, String)> = {
+                let mut stmt = conn.prepare(
+                    "SELECT bv.option_idx, bv.stake,
+                            COALESCE(NULLIF(v.display_name, ''), v.login, bv.twitch_id)
+                     FROM bet_votes bv
+                     LEFT JOIN viewers v ON v.twitch_id = bv.twitch_id
+                     WHERE bv.bet_id = ?1
+                     ORDER BY bv.stake DESC, bv.first_at ASC",
+                )?;
+                stmt.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                    .collect::<Result<_, _>>()?
+            };
+
+            let pot: i64 = votes.iter().map(|v| v.1).sum();
+            let options = labels
+                .into_iter()
+                .map(|(idx, label)| {
+                    let mine: Vec<&(i64, i64, String)> =
+                        votes.iter().filter(|v| v.0 == idx).collect();
+                    let total: i64 = mine.iter().map(|v| v.1).sum();
+                    BetOptionSnap {
+                        idx,
+                        letter: letter(idx),
+                        label,
+                        total,
+                        voters: mine.len() as i64,
+                        percent: if pot > 0 { total as f64 * 100.0 / pot as f64 } else { 0.0 },
+                        odds: if total > 0 { Some(pot as f64 / total as f64) } else { None },
+                        top: mine
+                            .iter()
+                            .take(3)
+                            .map(|v| TopBettor {
+                                name: v.2.clone(),
+                                stake: v.1,
+                            })
+                            .collect(),
+                    }
+                })
+                .collect();
+
+            Ok(Some(BetSnapshot {
+                id,
+                question,
+                status,
+                created_at,
+                closes_at,
+                pot,
+                voters: votes.len() as i64,
+                winner,
+                options,
+            }))
         })
     }
 }

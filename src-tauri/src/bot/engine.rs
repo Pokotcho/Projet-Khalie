@@ -459,6 +459,16 @@ pub async fn handle(app: AppHandle, msg: ChatMessage) {
         Kind::Give | Kind::Take | Kind::Streak | Kind::BestStreak | Kind::Points => {
             run_points_action(&app, &command, &msg, &args).await
         }
+
+        Kind::Bet
+        | Kind::BetEnd
+        | Kind::BetWin
+        | Kind::BetCancel
+        | Kind::Vote
+        | Kind::BetInfo => {
+            super::bets::run(&app, &command, &msg, &args);
+            None
+        }
     };
 
     // Commande silencieuse (ou échec déjà journalisé) : rien à écrire, et on rembourse.

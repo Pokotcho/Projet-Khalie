@@ -10,10 +10,11 @@ import messagesAuto from "./views/messages-auto.html?raw";
 import points from "./views/points.html?raw";
 import baseDeDonnees from "./views/base-de-donnees.html?raw";
 import evenements from "./views/evenements.html?raw";
+import bets from "./views/bets.html?raw";
 
 type Role = "streamer" | "bot";
 type Level = "everyone" | "moderator" | "streamer";
-type Tab = "chat" | "commands" | "auto" | "points" | "database" | "events";
+type Tab = "chat" | "commands" | "auto" | "points" | "bets" | "database" | "events";
 
 const ROLES: Role[] = ["streamer", "bot"];
 const ROLE_LABEL: Record<Role, string> = { streamer: "STREAMER", bot: "BOT" };
@@ -75,7 +76,13 @@ interface BotCommand {
     | "streak"
     | "best_streak"
     | "points"
-    | "points_list";
+    | "points_list"
+    | "bet"
+    | "bet_end"
+    | "bet_win"
+    | "bet_cancel"
+    | "vote"
+    | "bet_info";
 }
 interface AutoSettings {
   enabled: boolean;
@@ -100,6 +107,7 @@ interface BotConfig {
   points: PointsSettings;
   events: EventSettings;
   throne: ThroneSettings;
+  bets: BetSettings;
 }
 
 interface EventSettings {
@@ -117,6 +125,47 @@ interface ThroneSettings {
   gift_message: string;
   contribution_message: string;
   crowdfunded_message: string;
+}
+
+interface BetOption {
+  idx: number;
+  letter: string;
+  label: string;
+  total: number;
+  voters: number;
+  percent: number;
+  odds: number | null;
+  top: { name: string; stake: number }[];
+}
+interface BetSnapshot {
+  id: number;
+  question: string;
+  status: "open" | "closed" | "resolved" | "cancelled";
+  created_at: number;
+  closes_at: number | null;
+  pot: number;
+  voters: number;
+  winner: number | null;
+  options: BetOption[];
+}
+interface BetSettings {
+  min_stake: number;
+  mods_can_vote: boolean;
+  reply_as: Role;
+  option_format: string;
+  cote_format: string;
+  list_separator: string;
+  announce_title: string;
+  announce_options: string;
+  announce_vote: string;
+  recap: string;
+  recap_empty: string;
+  winner_one: string;
+  winner_two: string;
+  winner_many: string;
+  winner_refunded: string;
+  winner_none: string;
+  cancelled: string;
 }
 
 interface PointsSettings {
@@ -151,25 +200,21 @@ interface ViewersPage {
 }
 
 // Commandes qui agissent en silence : pas de texte de réponse.
-const SILENT_KINDS: BotCommand["kind"][] = ["title", "category", "shoutout"];
+const SILENT_KINDS: BotCommand["kind"][] = [
+  "title", "category", "shoutout",
+  "bet", "bet_end", "bet_win", "bet_cancel", "vote", "bet_info",
+];
 // Commandes qui ne peuvent pas être ouvertes à tout le monde.
 const MOD_ONLY_KINDS: BotCommand["kind"][] = [
-  "counter_reset",
-  "title",
-  "category",
-  "shoutout",
-  "give",
-  "take",
+  "counter_reset", "title", "category", "shoutout", "give", "take",
+  "bet", "bet_end", "bet_win", "bet_cancel",
 ];
 // Commandes rangées dans l'onglet Points (avec toutes les commandes qui ont un coût).
 const POINTS_KINDS: BotCommand["kind"][] = [
-  "follow",
-  "give",
-  "take",
-  "streak",
-  "best_streak",
-  "points",
+  "follow", "give", "take", "streak", "best_streak", "points", "points_list",
+  "bet", "bet_end", "bet_win", "bet_cancel", "vote", "bet_info",
 ];
+
 const isPointsCommand = (c: BotCommand) => POINTS_KINDS.includes(c.kind) || c.cost > 0;
 
 const KIND_HINT: Partial<Record<BotCommand["kind"], string>> = {
@@ -187,6 +232,12 @@ const KIND_HINT: Partial<Record<BotCommand["kind"], string>> = {
   best_streak: "Affiche la meilleure série (ou celle d'un autre : !beststreak @pseudo).",
   points: "Affiche le solde de points (ou celui d'un autre : !points @pseudo).",
   points_list: "Liste des commandes liées aux points accessibles à tous.",
+  bet: "Usage : !bet Objet ; Réponse A ; Réponse B (2 à 6 réponses). Ouvre un bet et l'annonce dans le chat.",
+  bet_end: "Termine les votes et annonce les cotes.",
+  bet_win: "Usage : !betgagnant A. Désigne la réponse gagnante et répartit la cagnotte.",
+  bet_cancel: "Annule le bet et rend toutes les mises.",
+  vote: "Usage : !vote A 100 (ou !vote A tout). Mise des points sur une réponse du bet en cours.",
+  bet_info: "Affiche le bet en cours, les cotes et la mise du viewer.",
 };
 
 // --- État de l'interface ---
@@ -261,6 +312,8 @@ function render() {
   $("#tab-events").classList.toggle("active", currentTab === "events");
   $("#database-section").hidden = !(both && currentTab === "database");
   $("#tab-database").classList.toggle("active", currentTab === "database");
+  $("#bets-section").hidden = !(both && currentTab === "bets");
+  $("#tab-bets").classList.toggle("active", currentTab === "bets");
 }
 
 function switchTab(tab: Tab) {
@@ -269,6 +322,7 @@ function switchTab(tab: Tab) {
   if (tab === "commands") loadCommands();
   if (tab === "auto") loadAuto();
   if (tab === "points") loadPoints();
+  if (tab === "bets") loadBets();
 
   if (tab === "events") {
     loadEvents();
@@ -982,6 +1036,185 @@ async function loadThrone() {
   await refreshThroneToken();
 }
 
+// --- Bets ---
+const BET_STATE: Record<BetSnapshot["status"], string> = {
+  open: "(votes ouverts)",
+  closed: "(votes terminés)",
+  resolved: "(terminé)",
+  cancelled: "(annulé)",
+};
+let lastBet: BetSnapshot | null = null;
+// Action « à confirmer » : un premier clic l'arme, un second clic dans les 4 s la lance.
+let armedAction: string | null = null;
+let armedTimer: number | undefined;
+
+function formatOdds(odds: number | null): string {
+  return odds === null ? "—" : `×${odds.toFixed(2).replace(".", ",")}`;
+}
+
+async function armOrRun(key: string, action: () => Promise<void>) {
+  if (armedAction !== key) {
+    armedAction = key;
+    window.clearTimeout(armedTimer);
+    armedTimer = window.setTimeout(() => {
+      armedAction = null;
+      renderBet(lastBet);
+    }, 4000);
+    renderBet(lastBet);
+    return;
+  }
+  window.clearTimeout(armedTimer);
+  armedAction = null;
+  await action();
+  renderBet(lastBet);
+}
+
+async function betAction(command: string, args?: Record<string, unknown>) {
+  const status = $("#bet-status");
+  try {
+    await invoke(command, args);
+    status.textContent = "";
+  } catch (e) {
+    status.textContent = `Erreur : ${e}`;
+  }
+}
+
+function renderBet(snap: BetSnapshot | null) {
+  lastBet = snap;
+  $("#bet-empty").hidden = snap !== null;
+  $("#bet-live").hidden = snap === null;
+  if (!snap) return;
+
+  const active = snap.status === "open" || snap.status === "closed";
+  $("#bet-question").textContent = snap.question;
+  $("#bet-state").textContent = BET_STATE[snap.status];
+  $("#bet-summary").textContent = `Cagnotte : ${snap.pot} ${pointsName} · ${snap.voters} votant(s)`;
+
+  const body = $("#bet-body");
+  body.replaceChildren();
+  for (const o of snap.options) {
+    const tr = document.createElement("tr");
+    const cells = [
+      `${o.letter}) ${o.label}`,
+      `${o.total} (${Math.round(o.percent)} %)`,
+      String(o.voters),
+      formatOdds(o.odds),
+    ];
+    for (const text of cells) {
+      const td = document.createElement("td");
+      td.textContent = text; // textContent : jamais de HTML venant d'un viewer
+      tr.appendChild(td);
+    }
+    const last = document.createElement("td");
+    if (active) {
+      const key = `win:${o.letter}`;
+      const btn = document.createElement("button");
+      btn.className = "btn-small";
+      btn.textContent = armedAction === key ? "Confirmer ?" : "Gagnante";
+      btn.addEventListener("click", () =>
+        armOrRun(key, () => betAction("bet_resolve", { letter: o.letter })),
+      );
+      last.appendChild(btn);
+    } else if (snap.status === "resolved" && snap.winner === o.idx) {
+      last.textContent = "🏆 gagnante";
+    }
+    tr.appendChild(last);
+    body.appendChild(tr);
+  }
+
+  $("#bet-close").hidden = snap.status !== "open";
+  const cancel = $("#bet-cancel");
+  cancel.hidden = !active;
+  cancel.textContent =
+    armedAction === "cancel" ? "Confirmer l'annulation ?" : "Annuler le bet (rembourser)";
+}
+
+async function loadBets() {
+  const config = await invoke<BotConfig>("bot_get_state");
+  pointsName = config.points.name;
+  $<HTMLInputElement>("#bet-min-stake").value = String(config.bets.min_stake);
+  $<HTMLInputElement>("#bet-mods-vote").checked = config.bets.mods_can_vote;
+  $<HTMLSelectElement>("#bet-reply-as").value = config.bets.reply_as;
+  fillBetTexts(config.bets);
+  renderBet(await invoke<BetSnapshot | null>("bet_get_state"));
+}
+
+// Champs de texte des réglages : [sélecteur, nom du réglage]
+const BET_TEXT_FIELDS = [
+  ["#bet-option-format", "option_format"],
+  ["#bet-cote-format", "cote_format"],
+  ["#bet-separator", "list_separator"],
+  ["#bet-msg-title", "announce_title"],
+  ["#bet-msg-options", "announce_options"],
+  ["#bet-msg-vote", "announce_vote"],
+  ["#bet-msg-recap", "recap"],
+  ["#bet-msg-recap-empty", "recap_empty"],
+  ["#bet-msg-win-one", "winner_one"],
+  ["#bet-msg-win-two", "winner_two"],
+  ["#bet-msg-win-many", "winner_many"],
+  ["#bet-msg-refunded", "winner_refunded"],
+  ["#bet-msg-none", "winner_none"],
+  ["#bet-msg-cancelled", "cancelled"],
+] as const;
+
+function fillBetTexts(s: BetSettings) {
+  for (const [selector, key] of BET_TEXT_FIELDS) {
+    $<HTMLInputElement>(selector).value = s[key];
+  }
+}
+
+function collectBetSettings(): BetSettings {
+  const texts = Object.fromEntries(
+    BET_TEXT_FIELDS.map(([selector, key]) => [key, $<HTMLInputElement>(selector).value]),
+  ) as Pick<BetSettings, (typeof BET_TEXT_FIELDS)[number][1]>;
+  return {
+    min_stake: Number($<HTMLInputElement>("#bet-min-stake").value) || 0,
+    mods_can_vote: $<HTMLInputElement>("#bet-mods-vote").checked,
+    reply_as: $<HTMLSelectElement>("#bet-reply-as").value as Role,
+    ...texts,
+  };
+}
+
+async function saveBetSettings(statusSelector: string) {
+  const status = $(statusSelector);
+  try {
+    await invoke("bot_bets_set_settings", { settings: collectBetSettings() });
+    status.textContent = "Enregistré";
+  } catch (e) {
+    status.textContent = `Erreur : ${e}`;
+  }
+}
+
+async function resetBetMessages() {
+  const status = $("#bet-messages-status");
+  try {
+    fillBetTexts(await invoke<BetSettings>("bot_bets_default_settings"));
+    status.textContent = "Messages par défaut remis : clique sur Enregistrer pour les appliquer.";
+  } catch (e) {
+    status.textContent = `Erreur : ${e}`;
+  }
+}
+
+async function createBet() {
+  const status = $("#bet-status");
+  const question = $<HTMLInputElement>("#bet-new-question");
+  const options = $<HTMLTextAreaElement>("#bet-new-options");
+  try {
+    await invoke("bet_create", {
+      question: question.value,
+      options: options.value
+        .split("\n")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0),
+    });
+    question.value = "";
+    options.value = "";
+    status.textContent = "Bet ouvert et annoncé dans le chat";
+  } catch (e) {
+    status.textContent = `Erreur : ${e}`;
+  }
+}
+
 // --- Démarrage ---
 window.addEventListener("DOMContentLoaded", async () => {
 
@@ -993,6 +1226,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     commandes,
     messagesAuto,
     points,
+    bets,
     baseDeDonnees,
     evenements,
   ].join("\n");
@@ -1048,6 +1282,16 @@ window.addEventListener("DOMContentLoaded", async () => {
   $<HTMLInputElement>("#throne-enabled").addEventListener("change", saveThroneSettings);
   $("#throne-test-conn").addEventListener("click", testThroneConnection);
   $("#throne-test-msg").addEventListener("click", testThroneMessage);
+
+  $("#tab-bets").addEventListener("click", () => switchTab("bets"));
+  $("#bet-new-add").addEventListener("click", createBet);
+  $("#bet-save").addEventListener("click", () => saveBetSettings("#bet-settings-status"));
+  $("#bet-save-messages").addEventListener("click", () => saveBetSettings("#bet-messages-status"));
+  $("#bet-reset-messages").addEventListener("click", resetBetMessages);
+  $("#bet-close").addEventListener("click", () => betAction("bet_close"));
+  $("#bet-cancel").addEventListener("click", () =>
+    armOrRun("cancel", () => betAction("bet_cancel")),
+  );
 
   $("#followers-resync").addEventListener("click", async () => {
     const status = $("#followers-status");
@@ -1120,6 +1364,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   await listen<boolean>("bot-live", (event) => {
     $("#live-state").textContent = event.payload ? "en direct" : "hors ligne";
   });
+
+  await listen<BetSnapshot | null>("bet-updated", (event) => renderBet(event.payload));
 
   // Restauration des sessions sauvegardées.
   const restored = await invoke<LoginInfo[]>("twitch_restore");

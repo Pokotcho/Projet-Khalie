@@ -1,0 +1,149 @@
+<section id="bets-section" hidden>
+  <div class="card">
+    <h2>Bet</h2>
+    <p id="bet-empty" class="hint">Aucun bet pour le moment.</p>
+    <div id="bet-live" hidden>
+      <p>
+        <strong id="bet-question"></strong>
+        <span id="bet-state" class="hint"></span>
+      </p>
+      <p id="bet-summary" class="hint"></p>
+      <div class="table-wrap">
+        <table class="viewers-table">
+          <thead>
+            <tr>
+              <th>Réponse</th>
+              <th>Points misés</th>
+              <th>Votants</th>
+              <th>Cote</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="bet-body"></tbody>
+        </table>
+      </div>
+      <div class="field-row">
+        <button id="bet-close" class="btn-small">Terminer les votes</button>
+        <button id="bet-cancel" class="btn-small">Annuler le bet (rembourser)</button>
+      </div>
+    </div>
+    <p id="bet-status" class="hint"></p>
+  </div>
+
+  <div class="card">
+    <h2>Nouveau bet</h2>
+    <label class="field">
+      Objet du bet :
+      <input id="bet-new-question" maxlength="150" size="50" placeholder="Qui gagne cette partie ?" />
+    </label>
+    <p class="hint">Les réponses, une par ligne (2 à 6) :</p>
+    <textarea
+      id="bet-new-options"
+      rows="3"
+      class="auto-textarea"
+      placeholder="Layka&#10;L'adversaire&#10;Égalité"
+    ></textarea>
+    <button id="bet-new-add">Ouvrir le bet</button>
+    <p class="hint">
+      Les modérateurs peuvent aussi l'ouvrir depuis le chat avec
+      <code>!bet Objet ; Réponse A ; Réponse B</code>. Un seul bet à la fois.
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>Réglages des bets</h2>
+    <div class="field-row">
+      <label class="field">
+        Mise minimale :
+        <input type="number" id="bet-min-stake" min="1" max="1000000" />
+      </label>
+      <label class="field">
+        <input type="checkbox" id="bet-mods-vote" />
+        Les modérateurs peuvent voter
+      </label>
+      <label class="field">
+        Compte qui écrit :
+        <select id="bet-reply-as">
+          <option value="bot">Bot</option>
+          <option value="streamer">Streamer</option>
+        </select>
+      </label>
+    </div>
+    <p class="hint">
+      Les commandes des bets (!bet, !betfin, !betgagnant, !betannuler, !vote, !mise) sont dans la
+      liste « Commandes liées aux points » de l'onglet Points : tu peux y changer leurs noms et
+      leurs droits d'accès. Le streamer ne peut pas miser.
+    </p>
+    <button id="bet-save">Enregistrer</button>
+    <p id="bet-settings-status" class="hint"></p>
+  </div>
+
+  <div class="card">
+    <h2>Messages du bet</h2>
+    <p class="hint">
+      Un message Twitch tient sur une seule ligne. Évite les suites de caractères qui forment une
+      émote Twitch (par exemple « B) » ou « :) »).
+    </p>
+
+    <div class="field-row">
+      <label class="field">
+        Une réponse dans la liste :
+        <input id="bet-option-format" maxlength="100" size="22" />
+      </label>
+      <label class="field">
+        Une cote dans la liste :
+        <input id="bet-cote-format" maxlength="100" size="22" />
+      </label>
+      <label class="field">
+        Séparateur :
+        <input id="bet-separator" maxlength="100" size="6" />
+      </label>
+    </div>
+    <p class="hint">
+      Champs d'une réponse : <code>[lettre]</code>, <code>[texte]</code>. Champs d'une cote :
+      <code>[lettre]</code>, <code>[texte]</code>, <code>[cote]</code>, <code>[total]</code>
+      (points misés), <code>[votants]</code>.
+    </p>
+
+    <p class="hint"><strong>Annonce, message 1 (l'objet)</strong> : <code>[objet]</code></p>
+    <textarea id="bet-msg-title" rows="2" maxlength="500" class="auto-textarea"></textarea>
+    <p class="hint"><strong>Annonce, message 2 (les réponses)</strong> : <code>[reponses]</code>, <code>[objet]</code></p>
+    <textarea id="bet-msg-options" rows="2" maxlength="500" class="auto-textarea"></textarea>
+    <p class="hint">
+      <strong>Annonce, message 3 (comment voter)</strong> : <code>[commande_vote]</code>,
+      <code>[mise_min]</code>, <code>[points]</code>
+    </p>
+    <textarea id="bet-msg-vote" rows="2" maxlength="500" class="auto-textarea"></textarea>
+
+    <p class="hint"><strong>Fin des votes</strong> : <code>[cotes]</code>, <code>[objet]</code>, <code>[total]</code> (cagnotte)</p>
+    <textarea id="bet-msg-recap" rows="2" maxlength="500" class="auto-textarea"></textarea>
+    <p class="hint"><strong>Fin des votes, sans aucun vote</strong></p>
+    <textarea id="bet-msg-recap-empty" rows="2" maxlength="500" class="auto-textarea"></textarea>
+
+    <p class="hint">
+      <strong>Gagnants</strong> : <code>[total]</code>, <code>[points]</code>,
+      <code>[gagnant]</code> (le plus gros parieur), <code>[second]</code>,
+      <code>[autres]</code> (nombre d'autres gagnants), <code>[lettre]</code> et
+      <code>[reponse]</code> (la réponse gagnante), <code>[objet]</code>
+    </p>
+    <p class="hint">Un seul gagnant :</p>
+    <textarea id="bet-msg-win-one" rows="2" maxlength="500" class="auto-textarea"></textarea>
+    <p class="hint">Deux gagnants :</p>
+    <textarea id="bet-msg-win-two" rows="2" maxlength="500" class="auto-textarea"></textarea>
+    <p class="hint">Plus de deux gagnants :</p>
+    <textarea id="bet-msg-win-many" rows="2" maxlength="500" class="auto-textarea"></textarea>
+    <p class="hint">Personne n'avait misé sur la bonne réponse (tout est rendu) :</p>
+    <textarea id="bet-msg-refunded" rows="2" maxlength="500" class="auto-textarea"></textarea>
+    <p class="hint">Bet terminé sans aucun vote :</p>
+    <textarea id="bet-msg-none" rows="2" maxlength="500" class="auto-textarea"></textarea>
+
+    <p class="hint"><strong>Bet annulé</strong> : <code>[total]</code> (points rendus), <code>[points]</code>, <code>[objet]</code></p>
+    <textarea id="bet-msg-cancelled" rows="2" maxlength="500" class="auto-textarea"></textarea>
+
+    <div class="field-row">
+      <button id="bet-save-messages">Enregistrer</button>
+      <button id="bet-reset-messages" class="btn-small">Remettre les messages par défaut</button>
+    </div>
+    <p id="bet-messages-status" class="hint"></p>
+  </div>
+</section>

@@ -163,6 +163,13 @@ pub fn run() {
             bot::throne::throne_clear_token,
             bot::throne::throne_test_connection,
             bot::throne::throne_test_message,
+            bot::bot_bets_set_settings,
+            bot::bot_bets_default_settings,
+            bot::bets::bet_get_state,
+            bot::bets::bet_create,
+            bot::bets::bet_close,
+            bot::bets::bet_resolve,
+            bot::bets::bet_cancel,
             db::db_list_viewers,
             diagnostics::open_logs_folder
         ])
